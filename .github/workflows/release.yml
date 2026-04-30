@@ -100,6 +100,13 @@ jobs:
           path: |
             app/build/outputs/bundle/**/*.aab
           compression-level: 0
+      - name: Upload APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: APKs
+          path: |
+            app/build/outputs/apk/**/*.apk
+          compression-level: 0
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,5 +114,5 @@ jobs:
           shopt -s globstar
 
           gh release create "${{ env.TAG_NAME }}" \
-            --latest --title "${{ env.TAG_NAME }}" --verify-tag -n "" --draft \
+            --latest --title "${{ env.TAG_NAME }}" --verify-tag -n "" \
             app/build/outputs/apk/**/*.apk
