@@ -45,6 +45,23 @@ jobs:
             echo "Create an Android release keystore and add KEY_ALIAS, KEY_PASSWORD, KEY_STORE_PASSWORD, and SIGNING_KEY repository secrets."
             exit 1
           fi
+      - name: Validate extension package secrets
+        env:
+          EXTENSIONS_USERNAME: "${{ secrets.EXTENSIONS_USERNAME }}"
+          EXTENSIONS_PASSWORD: "${{ secrets.EXTENSIONS_PASSWORD }}"
+        run: |
+          missing=()
+          for name in EXTENSIONS_USERNAME EXTENSIONS_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing extension package secrets: ${missing[*]}"
+            echo "Add EXTENSIONS_USERNAME and EXTENSIONS_PASSWORD repository secrets with access to damontecres/wholphin-extensions GitHub Packages."
+            exit 1
+          fi
       - name: Build app
         id: buildapp
         env:
