@@ -19,7 +19,14 @@ plugins {
 }
 
 val isCI = if (System.getenv("CI") != null) System.getenv("CI").toBoolean() else false
-val shouldSign = isCI && System.getenv("KEY_ALIAS") != null
+val shouldSign =
+    isCI &&
+        listOf(
+            "KEY_ALIAS",
+            "KEY_PASSWORD",
+            "KEY_STORE_PASSWORD",
+            "SIGNING_KEY",
+        ).all { System.getenv(it).isNullOrBlank().not() }
 val ffmpegModuleExists = project.file("libs/lib-decoder-ffmpeg-release.aar").exists()
 val av1ModuleExists = project.file("libs/lib-decoder-av1-release.aar").exists()
 val mpvModuleExists = project.file("libs/wholphin-mpv-release.aar").exists()
