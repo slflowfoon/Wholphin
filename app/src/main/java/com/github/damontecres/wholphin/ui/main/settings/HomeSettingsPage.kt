@@ -150,6 +150,7 @@ fun HomeSettingsPage(
                                             MetaRowType.CONTINUE_WATCHING,
                                             MetaRowType.NEXT_UP,
                                             MetaRowType.COMBINED_CONTINUE_WATCHING,
+                                            MetaRowType.COMING_SOON,
                                             -> {
                                                 addRow { viewModel.addRow(it) }
                                             }

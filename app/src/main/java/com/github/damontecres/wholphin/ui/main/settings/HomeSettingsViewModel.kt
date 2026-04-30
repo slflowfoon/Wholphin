@@ -11,6 +11,7 @@ import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.HomePageSettings
 import com.github.damontecres.wholphin.data.model.HomeRowConfig
+import com.github.damontecres.wholphin.data.model.HomeRowConfig.ComingSoon
 import com.github.damontecres.wholphin.data.model.HomeRowConfig.ContinueWatching
 import com.github.damontecres.wholphin.data.model.HomeRowConfig.ContinueWatchingCombined
 import com.github.damontecres.wholphin.data.model.HomeRowConfig.Genres
@@ -240,6 +241,14 @@ class HomeSettingsViewModel
                                 id = id,
                                 title = context.getString(R.string.combine_continue_next),
                                 config = ContinueWatchingCombined(),
+                            )
+                        }
+
+                        MetaRowType.COMING_SOON -> {
+                            HomeRowConfigDisplay(
+                                id = id,
+                                title = context.getString(R.string.coming_soon),
+                                config = ComingSoon(),
                             )
                         }
 
@@ -681,6 +690,7 @@ class HomeSettingsViewModel
                                 is ContinueWatching,
                                 is NextUp,
                                 is ContinueWatchingCombined,
+                                is ComingSoon,
                                 -> {
                                     it.config.updateViewOptions(preset.continueWatching)
                                 }

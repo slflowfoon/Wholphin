@@ -80,6 +80,7 @@ class HomeSettingsService
         private val latestNextUpService: LatestNextUpService,
         private val imageUrlService: ImageUrlService,
         private val suggestionService: SuggestionService,
+        private val seerrService: SeerrService,
         private val displayPreferencesService: DisplayPreferencesService,
     ) {
         @OptIn(ExperimentalSerializationApi::class)
@@ -460,6 +461,14 @@ class HomeSettingsService
                     )
                 }
 
+                is HomeRowConfig.ComingSoon -> {
+                    HomeRowConfigDisplay(
+                        id,
+                        context.getString(R.string.coming_soon),
+                        config,
+                    )
+                }
+
                 is HomeRowConfig.Genres -> {
                     val name = getItemName(config.parentId) ?: ""
                     HomeRowConfigDisplay(
@@ -635,6 +644,15 @@ class HomeSettingsService
                                 resume,
                                 nextUp,
                             ),
+                        viewOptions = row.viewOptions,
+                        rowType = row,
+                    )
+                }
+
+                is HomeRowConfig.ComingSoon -> {
+                    Success(
+                        title = context.getString(R.string.coming_soon),
+                        items = seerrService.comingSoon(limit),
                         viewOptions = row.viewOptions,
                         rowType = row,
                     )

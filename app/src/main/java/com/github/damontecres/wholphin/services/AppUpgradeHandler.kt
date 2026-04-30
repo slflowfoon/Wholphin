@@ -137,6 +137,20 @@ class AppUpgradeHandler
             current: Version,
             appPreferences: DataStore<AppPreferences>,
         ) {
+            appPreferences.updateData {
+                if (it.updateUrl.startsWith(OLD_UPSTREAM_UPDATE_URL_PREFIX)) {
+                    it.update {
+                        updateUrl =
+                            it.updateUrl.replace(
+                                OLD_UPSTREAM_UPDATE_URL_PREFIX,
+                                CUSTOM_UPDATE_URL_PREFIX,
+                            )
+                    }
+                } else {
+                    it
+                }
+            }
+
             if (previous.isEqualOrBefore(Version.fromString("0.1.0-2-g0"))) {
                 appPreferences.updateData {
                     it.updatePlaybackOverrides {
@@ -336,3 +350,6 @@ class AppUpgradeHandler
             }
         }
     }
+
+private const val OLD_UPSTREAM_UPDATE_URL_PREFIX = "https://api.github.com/repos/damontecres/Wholphin"
+private const val CUSTOM_UPDATE_URL_PREFIX = "https://api.github.com/repos/slflowfoon/Wholphin"

@@ -189,7 +189,11 @@ fun HomePage(
             val onClickPlay =
                 remember {
                     { _: RowColumn, item: BaseItem ->
-                        viewModel.navigationManager.navigateTo(Destination.Playback(item))
+                        if (item.destinationOverride != null) {
+                            viewModel.navigationManager.navigateTo(item.destination())
+                        } else {
+                            viewModel.navigationManager.navigateTo(Destination.Playback(item))
+                        }
                     }
                 }
 

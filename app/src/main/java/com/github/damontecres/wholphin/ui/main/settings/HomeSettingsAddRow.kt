@@ -44,6 +44,7 @@ fun HomeSettingsAddRow(
                     MetaRowType.CONTINUE_WATCHING,
                     MetaRowType.NEXT_UP,
                     MetaRowType.COMBINED_CONTINUE_WATCHING,
+                    MetaRowType.COMING_SOON,
                 ),
             ) { index, type ->
                 HomeSettingsListItem(
@@ -103,6 +104,7 @@ enum class MetaRowType(
     CONTINUE_WATCHING(R.string.continue_watching),
     NEXT_UP(R.string.next_up),
     COMBINED_CONTINUE_WATCHING(R.string.combine_continue_next),
+    COMING_SOON(R.string.coming_soon),
     FAVORITES(R.string.favorites),
     DISCOVER(R.string.discover),
     COLLECTION(R.string.collection),

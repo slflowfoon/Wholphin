@@ -55,6 +55,17 @@ sealed interface HomeRowConfig {
     }
 
     /**
+     * Seerr requests that are approved and currently processing/downloading
+     */
+    @Serializable
+    @SerialName("ComingSoon")
+    data class ComingSoon(
+        override val viewOptions: HomeRowViewOptions = HomeRowViewOptions(),
+    ) : HomeRowConfig {
+        override fun updateViewOptions(viewOptions: HomeRowViewOptions): ComingSoon = this.copy(viewOptions = viewOptions)
+    }
+
+    /**
      * Media recently added to a library
      */
     @Serializable

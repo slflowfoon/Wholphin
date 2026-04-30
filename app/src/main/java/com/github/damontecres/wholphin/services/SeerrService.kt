@@ -1,9 +1,11 @@
 package com.github.damontecres.wholphin.services
 
 import com.github.damontecres.wholphin.api.seerr.SeerrApiClient
+import com.github.damontecres.wholphin.api.seerr.RequestApi
 import com.github.damontecres.wholphin.api.seerr.model.CreditCast
 import com.github.damontecres.wholphin.api.seerr.model.CreditCrew
 import com.github.damontecres.wholphin.api.seerr.model.MediaInfo
+import com.github.damontecres.wholphin.api.seerr.model.MediaRequest
 import com.github.damontecres.wholphin.api.seerr.model.MovieDetails
 import com.github.damontecres.wholphin.api.seerr.model.MovieResult
 import com.github.damontecres.wholphin.api.seerr.model.SearchGet200ResponseResultsInner
@@ -13,13 +15,16 @@ import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.DiscoverItem
 import com.github.damontecres.wholphin.data.model.SeerrAvailability
 import com.github.damontecres.wholphin.data.model.SeerrItemType
+import com.github.damontecres.wholphin.ui.nav.Destination
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import com.github.damontecres.wholphin.ui.toLocalDate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -85,6 +90,23 @@ class SeerrService
                 .results
                 ?.map { createDiscoverItem(it) }
                 .orEmpty()
+
+        suspend fun comingSoon(limit: Int): List<BaseItem> =
+            if (active.first()) {
+                api.requestApi
+                    .requestGet(
+                        take = limit,
+                        skip = 0,
+                        filter = RequestApi.FilterRequestGet.PROCESSING,
+                        sort = RequestApi.SortRequestGet.ADDED,
+                        sortDirection = RequestApi.SortDirectionRequestGet.DESC,
+                        mediaType = RequestApi.MediaTypeRequestGet.ALL,
+                    ).results
+                    ?.mapNotNull { createComingSoonItem(it) }
+                    .orEmpty()
+            } else {
+                emptyList()
+            }
 
         /**
          * Get [DiscoverItem]s similar to the JF items such as movies, series, or people
@@ -152,6 +174,39 @@ class SeerrService
             } else {
                 null
             }
+
+        private suspend fun createComingSoonItem(request: MediaRequest): BaseItem? {
+            val mediaId = request.media?.tmdbId ?: return null
+            val type = SeerrItemType.fromString(request.type)
+            val item =
+                when (type) {
+                    SeerrItemType.MOVIE -> createDiscoverItem(api.moviesApi.movieMovieIdGet(mediaId))
+                    SeerrItemType.TV -> createDiscoverItem(api.tvApi.tvTvIdGet(mediaId))
+                    SeerrItemType.PERSON,
+                    SeerrItemType.UNKNOWN,
+                    -> return null
+                }
+            return item.toBaseItem(request.id)
+        }
+
+        private fun DiscoverItem.toBaseItem(requestId: Int): BaseItem {
+            val itemId =
+                java.util.UUID.nameUUIDFromBytes(
+                    "coming-soon:$type:$id:$requestId".toByteArray(StandardCharsets.UTF_8),
+                )
+            return BaseItem(
+                data =
+                    BaseItemDto(
+                        id = itemId,
+                        type = type.baseItemKind ?: BaseItemKind.MOVIE,
+                        name = title,
+                        overview = overview,
+                        productionYear = releaseDate?.year,
+                    ),
+                imageUrlOverride = posterUrl,
+                destinationOverride = Destination.DiscoveredItem(this),
+            )
+        }
 
         private suspend fun createImageUrl(
             imageType: ImageType,
