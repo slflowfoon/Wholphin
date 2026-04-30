@@ -30,7 +30,9 @@ val shouldSign =
 val ffmpegModuleExists = project.file("libs/lib-decoder-ffmpeg-release.aar").exists()
 val av1ModuleExists = project.file("libs/lib-decoder-av1-release.aar").exists()
 val mpvModuleExists = project.file("libs/wholphin-mpv-release.aar").exists()
-val extensionsRepoActive = project.hasProperty("WholphinExtensionsUsername")
+val extensionsRepoActive =
+    project.findProperty("WholphinExtensionsUsername")?.toString().isNullOrBlank().not() &&
+        project.findProperty("WholphinExtensionsPassword")?.toString().isNullOrBlank().not()
 
 val gitTags =
     providers
