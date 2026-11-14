@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,10 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
-import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
-import androidx.tv.material3.surfaceColorAtElevation
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.model.DiscoverItem
 import com.github.damontecres.wholphin.data.model.SeerrAvailability
@@ -63,8 +59,6 @@ fun DiscoverItemCard(
     width: Dp = Cards.height2x3 * AspectRatios.TALL,
 ) {
     val focused by interactionSource.collectIsFocusedAsState()
-    val spaceBetween by animateDpAsState(if (focused) 12.dp else 4.dp)
-    val spaceBelow by animateDpAsState(if (focused) 4.dp else 12.dp)
     var focusedAfterDelay by remember { mutableStateOf(false) }
 
     val hideOverlayDelay = 500L
@@ -82,7 +76,7 @@ fun DiscoverItemCard(
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(spaceBetween),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
         modifier = modifier.size(width, Dp.Unspecified),
     ) {
         Card(
@@ -134,7 +128,16 @@ fun DiscoverItemCard(
                         AvailableIndicator(Modifier.align(Alignment.TopEnd))
                     }
 
-                    else -> {}
+                    SeerrAvailability.BLOCKLISTED -> {
+                        // TODO handle block listed
+//                        BlocklistedIndicator(Modifier.align(Alignment.TopEnd))
+                    }
+
+                    SeerrAvailability.UNKNOWN,
+                    SeerrAvailability.DELETED,
+                    null,
+                    -> {
+                    }
                 }
                 if (showOverlay) {
                     val color =
@@ -175,13 +178,7 @@ fun DiscoverItemCard(
                 }
             }
         }
-        Column(
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-            modifier =
-                Modifier
-                    .padding(bottom = spaceBelow)
-                    .fillMaxWidth(),
-        ) {
+        SlidingCardText(focused) {
             Text(
                 text = item?.title ?: "",
                 maxLines = 1,
@@ -289,84 +286,27 @@ fun PartiallyAvailableIndicator(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun DiscoverViewMoreCard(
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
-) {
-    val focused by interactionSource.collectIsFocusedAsState()
-    val spaceBetween by animateDpAsState(if (focused) 12.dp else 4.dp)
-    val spaceBelow by animateDpAsState(if (focused) 4.dp else 12.dp)
-    var focusedAfterDelay by remember { mutableStateOf(false) }
-
-    val hideOverlayDelay = 500L
-    if (focused) {
-        LaunchedEffect(Unit) {
-            delay(hideOverlayDelay)
-            if (focused) {
-                focusedAfterDelay = true
-            } else {
-                focusedAfterDelay = false
-            }
-        }
-    } else {
-        focusedAfterDelay = false
-    }
-    val width = Cards.height2x3 * AspectRatios.TALL
-    val height = Dp.Unspecified * (1f / AspectRatios.TALL)
-    Column(
-        verticalArrangement = Arrangement.spacedBy(spaceBetween),
-        modifier = modifier.size(width, height),
+fun BlocklistedIndicator(modifier: Modifier = Modifier) {
+    Box(
+        modifier =
+            modifier
+                .padding(4.dp)
+                .border(
+                    width = .5.dp,
+                    color = Color.White,
+                    shape = CircleShape,
+                ).background(
+                    color = AppColors.Discover.Red.copy(alpha = .85f),
+                    shape = CircleShape,
+                ).size(16.dp),
     ) {
-        Card(
-            modifier =
-                Modifier
-                    .size(Dp.Unspecified, Cards.height2x3)
-                    .aspectRatio(AspectRatios.TALL),
-            onClick = onClick,
-            onLongClick = onLongClick,
-            interactionSource = interactionSource,
-            colors =
-                CardDefaults.colors(
-                    containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp),
-                ),
-        ) {
-            Box(
-                modifier =
-                    Modifier
-                        .fillMaxSize(),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ArrowForward,
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    contentDescription = "View more",
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
-
-        Column(
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-            modifier =
-                Modifier
-                    .padding(bottom = spaceBelow)
-                    .fillMaxWidth(),
-        ) {
-            Text(
-                text = stringResource(R.string.view_more),
-                maxLines = 1,
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.SemiBold,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp)
-                        .enableMarquee(focusedAfterDelay),
-            )
-        }
+        Text(
+            text = stringResource(R.string.fa_xmark),
+            fontFamily = FontAwesome,
+            fontSize = 10.sp,
+            color = Color.White,
+            modifier = Modifier.align(Alignment.Center),
+        )
     }
 }
 
@@ -378,11 +318,7 @@ private fun Preview() {
             PendingIndicator()
             AvailableIndicator()
             PartiallyAvailableIndicator()
-            DiscoverViewMoreCard(
-                onClick = {},
-                onLongClick = {},
-                modifier = Modifier,
-            )
+            BlocklistedIndicator()
         }
     }
 }

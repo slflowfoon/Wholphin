@@ -1,6 +1,7 @@
 package com.github.damontecres.wholphin.ui.components
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
@@ -9,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -19,6 +21,7 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.ui.LocalImageUrlService
+import com.github.damontecres.wholphin.ui.logCoilError
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 
@@ -38,6 +41,10 @@ fun TitleOrLogo(
                 model = logoImageUrl,
                 contentDescription = title,
                 contentScale = ContentScale.Fit,
+                onError = {
+                    logCoilError(logoImageUrl, it.result)
+                    imageError = true
+                },
                 modifier =
                     Modifier
                         .height(HeaderUtils.logoHeight)
@@ -84,12 +91,48 @@ fun TitleOrLogo(
 fun rememberLogoUrl(item: BaseItem?): String? {
     val imageUrlService = LocalImageUrlService.current
     return remember(item?.id) {
-        if (item?.type == BaseItemKind.EPISODE && item.data.seriesId != null && item.data.parentLogoImageTag != null) {
-            imageUrlService.getItemImageUrl(item.data.seriesId!!, ImageType.LOGO)
+        if ((item?.type == BaseItemKind.EPISODE || item?.type == BaseItemKind.SEASON) &&
+            item.data.seriesId != null &&
+            item.data.parentLogoImageTag != null
+        ) {
+            imageUrlService.getItemImageUrl(
+                itemId = item.data.seriesId!!,
+                imageType = ImageType.LOGO,
+                tag = item.data.parentLogoImageTag.takeIf { item.data.parentLogoItemId == item.data.seriesId },
+            )
         } else if (ImageType.LOGO in item?.data?.imageTags.orEmpty()) {
             imageUrlService.getItemImageUrl(item, ImageType.LOGO)
         } else {
             null
+        }
+    }
+}
+
+@Composable
+fun SimpleTitleOrLogo(
+    item: BaseItem?,
+    showLogo: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val logoImageUrl = rememberLogoUrl(item)
+    var imageError by remember { mutableStateOf(false) }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier,
+    ) {
+        if (showLogo && logoImageUrl != null && !imageError) {
+            AsyncImage(
+                model = logoImageUrl,
+                contentDescription = item?.title,
+                contentScale = ContentScale.Fit,
+                onError = {
+                    logCoilError(logoImageUrl, it.result)
+                    imageError = true
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Title(item?.title, Modifier)
         }
     }
 }

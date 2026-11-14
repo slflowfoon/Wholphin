@@ -1,15 +1,17 @@
 package com.github.damontecres.wholphin
 
 import android.service.dreams.DreamService
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.datastore.core.DataStore
 import androidx.lifecycle.Lifecycle
@@ -20,6 +22,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.github.damontecres.wholphin.data.RestoredSession
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.services.ScreensaverService
@@ -31,9 +34,7 @@ import com.github.damontecres.wholphin.ui.theme.WholphinTheme
 import com.github.damontecres.wholphin.ui.util.ProvideLocalClock
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.first
 import okhttp3.OkHttpClient
-import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import timber.log.Timber
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
@@ -73,8 +74,10 @@ class WholphinDreamService :
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         lifecycleScope.launchDefault {
             if (serverRepository.current.value == null) {
-                val prefs = preferencesDataStore.data.first()
-                serverRepository.restoreSession(prefs.currentServerId.toUUIDOrNull(), prefs.currentUserId.toUUIDOrNull())
+                val result = serverRepository.restoreLastSession()
+                if (result !is RestoredSession.Success) {
+                    Timber.w("Could not restore user session")
+                }
             }
         }
     }
@@ -88,7 +91,7 @@ class WholphinDreamService :
                 setViewTreeLifecycleOwner(this@WholphinDreamService)
                 setViewTreeSavedStateRegistryOwner(this@WholphinDreamService)
                 setContent {
-                    val user by serverRepository.currentUser.observeAsState()
+                    val user by serverRepository.currentUserFlow.collectAsState(null)
                     if (user != null) {
                         var prefs by remember { mutableStateOf<AppPreferences?>(null) }
                         LaunchedEffect(Unit) {
@@ -105,13 +108,23 @@ class WholphinDreamService :
                                 ProvideLocalClock {
                                     val screensaverPrefs = prefs.interfacePreferences.screensaverPreference
                                     val currentItem by itemFlow.collectAsState(null)
-                                    AppScreensaverContent(
-                                        currentItem = currentItem,
-                                        showClock = screensaverPrefs.showClock,
-                                        duration = screensaverPrefs.duration.milliseconds,
-                                        animate = screensaverPrefs.animate,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
+                                    Box(Modifier.fillMaxSize()) {
+                                        AppScreensaverContent(
+                                            currentItem = currentItem,
+                                            showClock = screensaverPrefs.showClock,
+                                            duration = screensaverPrefs.duration.milliseconds,
+                                            animate = screensaverPrefs.animate,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                        if (screensaverPrefs.dimEnabled) {
+                                            val alpha = screensaverPrefs.dimPercent / 100f
+                                            Box(
+                                                Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = alpha)),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

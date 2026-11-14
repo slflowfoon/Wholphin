@@ -1,4 +1,4 @@
-@file:UseSerializers(UUIDSerializer::class)
+@file:UseSerializers(UUIDSerializer::class, ZonedDateTimeSerializer::class)
 
 package com.github.damontecres.wholphin.data.model
 
@@ -10,11 +10,16 @@ import androidx.room.Ignore
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Relation
+import com.github.damontecres.wholphin.data.ZonedDateTimeSerializer
+import com.github.damontecres.wholphin.preferences.SubtitleModePreference
+import com.github.damontecres.wholphin.preferences.UserProfileSettings
+import com.github.damontecres.wholphin.services.HomePageSettingsSource
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.UseSerializers
 import org.jellyfin.sdk.model.ServerVersion
 import org.jellyfin.sdk.model.serializer.UUIDSerializer
+import java.time.ZonedDateTime
 import java.util.UUID
 
 /**
@@ -27,6 +32,7 @@ data class JellyfinServer(
     val name: String?,
     val url: String,
     val version: String?,
+    val lastUsed: ZonedDateTime? = null,
 ) {
     @get:Ignore
     val serverVersion: ServerVersion? by lazy { version?.let(ServerVersion::fromString) }
@@ -58,12 +64,31 @@ data class JellyfinUser(
     val serverId: UUID,
     val accessToken: String?,
     val pin: String? = null,
+    @ColumnInfo(defaultValue = "false")
+    val requireLogin: Boolean = false,
+    val lastUsed: ZonedDateTime? = null,
+    val uiLanguage: String? = null,
+    @Embedded val appPreferences: JellyfinUserPreferences = JellyfinUserPreferences(),
+    @Embedded(prefix = "c_") val config: JellyfinUserConfig = JellyfinUserConfig(),
 ) {
     val hasPin: Boolean get() = pin.isNotNullOrBlank()
 
+    val isProtected: Boolean get() = hasPin || requireLogin
+
     override fun toString(): String =
-        "JellyfinUser(rowId=$rowId, id=$id, name=$name, serverId=$serverId, accessToken?=${accessToken.isNotNullOrBlank()}, pin?=${pin.isNotNullOrBlank()})"
+        "JellyfinUser(rowId=$rowId, id=$id, name=$name, serverId=$serverId, lastUsed=$lastUsed, " +
+            "accessToken?=${accessToken.isNotNullOrBlank()}, pin?=${pin.isNotNullOrBlank()}), " +
+            "requireLogin=$requireLogin, lastUsed=$lastUsed, uiLanguage=$uiLanguage, " +
+            "appPreferences=$appPreferences, config=$config"
+
+    fun updateConfig(copy: (JellyfinUserConfig) -> JellyfinUserConfig): JellyfinUser = this.copy(config = copy.invoke(this.config))
 }
+
+@Serializable
+data class JellyfinUserConfig(
+    @ColumnInfo(defaultValue = "UNSET")
+    val homeSettingsSource: HomePageSettingsSource = HomePageSettingsSource.UNSET,
+)
 
 /**
  * Represents the relationship between [JellyfinServer] and its [JellyfinUser]
@@ -75,4 +100,14 @@ data class JellyfinServerUsers(
         entityColumn = "serverId",
     )
     val users: List<JellyfinUser>,
+)
+
+@Serializable
+data class JellyfinUserPreferences(
+    @ColumnInfo(defaultValue = "")
+    val preferredAudioLanguage: String = UserProfileSettings.USE_USER_PROFILE,
+    @ColumnInfo(defaultValue = "")
+    val preferredSubtitleLanguage: String = UserProfileSettings.USE_USER_PROFILE,
+    @ColumnInfo(defaultValue = "USE_USER_PROFILE")
+    val subtitleMode: SubtitleModePreference = SubtitleModePreference.USE_USER_PROFILE,
 )

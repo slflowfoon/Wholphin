@@ -22,14 +22,15 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.Player
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.model.Chapter
-import com.github.damontecres.wholphin.data.model.Playlist
 import com.github.damontecres.wholphin.ui.cards.ChapterCard
 import com.github.damontecres.wholphin.ui.components.HiddenFocusBox
 import com.github.damontecres.wholphin.ui.ifElse
@@ -42,11 +43,11 @@ fun ChapterRowOverlay(
     player: Player,
     controllerViewState: ControllerViewState,
     chapters: List<Chapter>,
-    playlist: Playlist,
-    aspectRatio: Float,
+    hasNext: Boolean,
     onChangeState: (OverlayViewState) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
     val chapterInteractionSources =
         remember(chapters.size) { List(chapters.size) { MutableInteractionSource() } }
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
@@ -113,10 +114,7 @@ fun ChapterRowOverlay(
                     if (isFocused) controllerViewState.pulseControls()
                 }
                 ChapterCard(
-                    name = chapter.name,
-                    position = chapter.position,
-                    imageUrl = chapter.imageUrl,
-                    aspectRatio = aspectRatio,
+                    chapter = chapter,
                     onClick = {
                         player.seekTo(chapter.position.inWholeMilliseconds)
                         controllerViewState.hideControls()
@@ -135,13 +133,16 @@ fun ChapterRowOverlay(
                                 index == 0,
                                 Modifier.focusProperties {
                                     // Prevent scrolling left on first card to prevent moving down
-                                    left = FocusRequester.Cancel
+                                    left =
+                                        if (isLtr) FocusRequester.Cancel else FocusRequester.Default
+                                    right =
+                                        if (isLtr) FocusRequester.Default else FocusRequester.Cancel
                                 },
                             ),
                 )
             }
         }
-        if (playlist.hasNext()) {
+        if (hasNext) {
             Text(
                 text = stringResource(R.string.queue),
                 style = MaterialTheme.typography.titleLarge,

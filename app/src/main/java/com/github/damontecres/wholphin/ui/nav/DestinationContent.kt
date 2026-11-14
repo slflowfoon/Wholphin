@@ -13,6 +13,7 @@ import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.ui.components.ItemGrid
 import com.github.damontecres.wholphin.ui.components.LicenseInfo
 import com.github.damontecres.wholphin.ui.data.MovieSortOptions
+import com.github.damontecres.wholphin.ui.data.rememberSortOptions
 import com.github.damontecres.wholphin.ui.detail.CollectionFolderGeneric
 import com.github.damontecres.wholphin.ui.detail.CollectionFolderLiveTv
 import com.github.damontecres.wholphin.ui.detail.CollectionFolderMovie
@@ -23,6 +24,7 @@ import com.github.damontecres.wholphin.ui.detail.CollectionFolderRecordings
 import com.github.damontecres.wholphin.ui.detail.CollectionFolderTv
 import com.github.damontecres.wholphin.ui.detail.DebugPage
 import com.github.damontecres.wholphin.ui.detail.FavoritesPage
+import com.github.damontecres.wholphin.ui.detail.HomeRowGrid
 import com.github.damontecres.wholphin.ui.detail.PersonPage
 import com.github.damontecres.wholphin.ui.detail.PlaylistDetails
 import com.github.damontecres.wholphin.ui.detail.collection.CollectionDetails
@@ -34,17 +36,19 @@ import com.github.damontecres.wholphin.ui.detail.movie.MovieDetails
 import com.github.damontecres.wholphin.ui.detail.music.AlbumDetailsPage
 import com.github.damontecres.wholphin.ui.detail.music.ArtistDetailsPage
 import com.github.damontecres.wholphin.ui.detail.music.NowPlayingPage
+import com.github.damontecres.wholphin.ui.detail.music.SongDetailsPage
 import com.github.damontecres.wholphin.ui.detail.series.SeriesDetails
 import com.github.damontecres.wholphin.ui.detail.series.SeriesOverview
 import com.github.damontecres.wholphin.ui.discover.DiscoverPage
 import com.github.damontecres.wholphin.ui.discover.DiscoverRequestGrid
 import com.github.damontecres.wholphin.ui.main.HomePage
-import com.github.damontecres.wholphin.ui.main.SearchPage
 import com.github.damontecres.wholphin.ui.main.settings.HomeSettingsPage
 import com.github.damontecres.wholphin.ui.playback.PlayExternalPage
 import com.github.damontecres.wholphin.ui.playback.PlaybackPage
 import com.github.damontecres.wholphin.ui.preferences.PreferencesPage
 import com.github.damontecres.wholphin.ui.preferences.subtitle.SubtitleStylePage
+import com.github.damontecres.wholphin.ui.preferences.user.UserProfilePreferencesPage
+import com.github.damontecres.wholphin.ui.search.SearchPage
 import com.github.damontecres.wholphin.ui.setup.InstallUpdatePage
 import com.github.damontecres.wholphin.ui.slideshow.SlideshowPage
 import org.jellyfin.sdk.model.api.BaseItemKind
@@ -124,6 +128,10 @@ fun DestinationContent(
                 destination.hdr,
                 modifier,
             )
+        }
+
+        Destination.UserAppPreferences -> {
+            UserProfilePreferencesPage(modifier)
         }
 
         is Destination.SeriesOverview -> {
@@ -250,6 +258,7 @@ fun DestinationContent(
                     AlbumDetailsPage(
                         preferences = preferences,
                         itemId = destination.itemId,
+                        initialSongId = destination.initialSongId,
                         modifier = modifier,
                     )
                 }
@@ -257,6 +266,15 @@ fun DestinationContent(
                 BaseItemKind.MUSIC_ARTIST -> {
                     LaunchedEffect(Unit) { onClearBackdrop.invoke() }
                     ArtistDetailsPage(
+                        preferences = preferences,
+                        itemId = destination.itemId,
+                        modifier = modifier,
+                    )
+                }
+
+                BaseItemKind.AUDIO -> {
+                    LaunchedEffect(Unit) { onClearBackdrop.invoke() }
+                    SongDetailsPage(
                         preferences = preferences,
                         itemId = destination.itemId,
                         modifier = modifier,
@@ -285,6 +303,16 @@ fun DestinationContent(
                         BaseItemKind.STUDIO -> DefaultForStudiosFilterOptions
                         else -> throw IllegalArgumentException("Unsupported parentType ${destination.parentType}")
                     },
+                sortOptions = rememberSortOptions(destination.collectionType),
+                modifier = modifier,
+            )
+        }
+
+        is Destination.MoreHomeRow -> {
+            LaunchedEffect(Unit) { onClearBackdrop.invoke() }
+            HomeRowGrid(
+                preferences = preferences,
+                destination = destination,
                 modifier = modifier,
             )
         }
@@ -299,9 +327,10 @@ fun DestinationContent(
             )
         }
 
-        is Destination.ItemGrid -> {
+        is Destination.ItemGrid<*> -> {
             LaunchedEffect(Unit) { onClearBackdrop.invoke() }
             ItemGrid(
+                preferences,
                 destination,
                 modifier,
             )
@@ -333,9 +362,10 @@ fun DestinationContent(
             LicenseInfo(modifier)
         }
 
-        Destination.Search -> {
+        is Destination.Search -> {
             LaunchedEffect(Unit) { onClearBackdrop.invoke() }
             SearchPage(
+                initialQuery = destination.query,
                 userPreferences = preferences,
                 modifier = modifier,
             )
@@ -346,6 +376,7 @@ fun DestinationContent(
         }
 
         Destination.Discover -> {
+            LaunchedEffect(Unit) { onClearBackdrop.invoke() }
             DiscoverPage(
                 preferences = preferences,
                 modifier = modifier,
@@ -374,6 +405,7 @@ fun DestinationContent(
                     LaunchedEffect(Unit) { onClearBackdrop.invoke() }
                     DiscoverPersonPage(
                         person = destination.item,
+                        startIndex = destination.startIndex,
                         modifier = modifier,
                     )
                 }
@@ -391,6 +423,8 @@ fun DestinationContent(
             LaunchedEffect(Unit) { onClearBackdrop.invoke() }
             DiscoverRequestGrid(
                 destination = destination,
+                showTitle = true,
+                positionCallback = { _, _ -> },
                 modifier = modifier,
             )
         }

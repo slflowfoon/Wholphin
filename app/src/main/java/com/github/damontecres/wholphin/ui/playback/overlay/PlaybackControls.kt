@@ -22,11 +22,13 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -42,10 +44,13 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -68,6 +73,7 @@ import com.github.damontecres.wholphin.ui.PreviewTvSpec
 import com.github.damontecres.wholphin.ui.components.Button
 import com.github.damontecres.wholphin.ui.components.SelectedLeadingContent
 import com.github.damontecres.wholphin.ui.components.TextButton
+import com.github.damontecres.wholphin.ui.formatDuration
 import com.github.damontecres.wholphin.ui.indexOfFirstOrNull
 import com.github.damontecres.wholphin.ui.playback.ControllerViewState
 import com.github.damontecres.wholphin.ui.playback.PlaybackDialogType
@@ -117,6 +123,10 @@ sealed interface PlaybackAction {
     data object Previous : PlaybackAction
 
     data object Next : PlaybackAction
+
+    data class ChangeBitrate(
+        val maxBitrate: Long,
+    ) : PlaybackAction
 }
 
 /**
@@ -129,9 +139,6 @@ fun PlaybackControls(
     controllerViewState: ControllerViewState,
     onPlaybackActionClick: (PlaybackAction) -> Unit,
     onClickPlaybackDialogType: (PlaybackDialogType) -> Unit,
-    moreFocusRequester: FocusRequester,
-    captionFocusRequester: FocusRequester,
-    settingsFocusRequester: FocusRequester,
     onSeekProgress: (Long) -> Unit,
     showPlay: Boolean,
     previousEnabled: Boolean,
@@ -186,11 +193,11 @@ fun PlaybackControls(
                     .fillMaxWidth(),
         ) {
             LeftPlaybackButtons(
-                moreFocusRequester = moreFocusRequester,
                 onControllerInteraction = onControllerInteraction,
                 onClickPlaybackDialogType = onClickPlaybackDialogType,
                 modifier = Modifier.align(Alignment.CenterStart),
             )
+
             PlaybackButtons(
                 player = player,
                 initialFocusRequester = initialFocusRequester,
@@ -204,6 +211,7 @@ fun PlaybackControls(
                 skipBackOnResume = skipBackOnResume,
                 modifier = Modifier.align(Alignment.Center),
             )
+
             Row(
                 modifier = Modifier.align(Alignment.CenterEnd),
             ) {
@@ -220,8 +228,6 @@ fun PlaybackControls(
                     )
                 }
                 RightPlaybackButtons(
-                    captionFocusRequester = captionFocusRequester,
-                    settingsFocusRequester = settingsFocusRequester,
                     onControllerInteraction = onControllerInteraction,
                     onClickPlaybackDialogType = onClickPlaybackDialogType,
                     modifier = Modifier,
@@ -274,27 +280,53 @@ fun SeekBar(
             seekBack = seekBack,
             seekForward = seekForward,
         )
-        Row(
+        SeekTimecodes(
+            positionMs = position,
+            durationMs = player.duration,
             modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+fun SeekTimecodes(
+    positionMs: Long,
+    durationMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val currentLayoutDirection = LocalLayoutDirection.current
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            modifier = modifier,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            val remaining = ((player.duration - position) / 1000).seconds
-            Text(
-                text = (position / 1000).seconds.toString(),
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.labelLarge,
-                modifier =
-                    Modifier
-                        .padding(8.dp),
-            )
-            Text(
-                text = "-$remaining",
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.labelLarge,
-                modifier =
-                    Modifier
-                        .padding(8.dp),
-            )
+            val resources = LocalResources.current
+            val positionSec = positionMs / 1000
+            val remainingSec = (durationMs - positionMs) / 1000
+            val positionText =
+                remember(positionSec) { resources.formatDuration(positionSec.seconds) }
+            val remainingText =
+                remember(remainingSec) { "-${resources.formatDuration(remainingSec.seconds)}" }
+            CompositionLocalProvider(LocalLayoutDirection provides currentLayoutDirection) {
+                Text(
+                    text = positionText,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier =
+                        Modifier
+                            .padding(8.dp),
+                )
+            }
+            CompositionLocalProvider(LocalLayoutDirection provides currentLayoutDirection) {
+                Text(
+                    text = remainingText,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier =
+                        Modifier
+                            .padding(8.dp),
+                )
+            }
         }
     }
 }
@@ -303,7 +335,6 @@ val buttonSpacing = 12.dp
 
 @Composable
 fun LeftPlaybackButtons(
-    moreFocusRequester: FocusRequester,
     onControllerInteraction: () -> Unit,
     onClickPlaybackDialogType: (PlaybackDialogType) -> Unit,
     modifier: Modifier = Modifier,
@@ -312,24 +343,21 @@ fun LeftPlaybackButtons(
         modifier = modifier.focusGroup(),
         horizontalArrangement = Arrangement.spacedBy(buttonSpacing),
     ) {
-        // More options
         PlaybackButton(
-            iconRes = R.drawable.baseline_more_vert_96,
+            iconRes = R.drawable.vector_settings,
             onClick = {
                 onControllerInteraction.invoke()
-                onClickPlaybackDialogType.invoke(PlaybackDialogType.MORE)
+                onClickPlaybackDialogType.invoke(PlaybackDialogType.SETTINGS)
             },
             enabled = true,
             onControllerInteraction = onControllerInteraction,
-            modifier = Modifier.focusRequester(moreFocusRequester),
+            modifier = Modifier,
         )
     }
 }
 
 @Composable
 fun RightPlaybackButtons(
-    captionFocusRequester: FocusRequester,
-    settingsFocusRequester: FocusRequester,
     onControllerInteraction: () -> Unit,
     onClickPlaybackDialogType: (PlaybackDialogType) -> Unit,
     modifier: Modifier = Modifier,
@@ -347,18 +375,18 @@ fun RightPlaybackButtons(
                 onClickPlaybackDialogType.invoke(PlaybackDialogType.CAPTIONS)
             },
             onControllerInteraction = onControllerInteraction,
-            modifier = Modifier.focusRequester(captionFocusRequester),
+            modifier = Modifier,
         )
-        // Playback speed, etc
-        PlaybackButton(
-            iconRes = R.drawable.vector_settings,
+        // Audio
+        PlaybackFaButton(
+            enabled = true,
+            iconRes = R.string.fa_volume_high,
             onClick = {
                 onControllerInteraction.invoke()
-                onClickPlaybackDialogType.invoke(PlaybackDialogType.SETTINGS)
+                onClickPlaybackDialogType.invoke(PlaybackDialogType.AUDIO)
             },
-            enabled = true,
             onControllerInteraction = onControllerInteraction,
-            modifier = Modifier.focusRequester(settingsFocusRequester),
+            modifier = Modifier,
         )
     }
 }
@@ -378,60 +406,62 @@ fun PlaybackButtons(
     seekForward: Duration,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier.focusGroup(),
-        horizontalArrangement = Arrangement.spacedBy(buttonSpacing),
-    ) {
-        PlaybackButton(
-            iconRes = R.drawable.baseline_skip_previous_24,
-            onClick = {
-                onControllerInteraction.invoke()
-                onPlaybackActionClick.invoke(PlaybackAction.Previous)
-            },
-            enabled = previousEnabled,
-            onControllerInteraction = onControllerInteraction,
-        )
-        PlaybackButton(
-            iconRes = R.drawable.baseline_fast_rewind_24,
-            onClick = {
-                onControllerInteraction.invoke()
-                player.seekBack(seekBack)
-            },
-            onControllerInteraction = onControllerInteraction,
-        )
-        PlaybackButton(
-            modifier = Modifier.focusRequester(initialFocusRequester),
-            iconRes = if (showPlay) R.drawable.baseline_play_arrow_24 else R.drawable.baseline_pause_24,
-            onClick = {
-                onControllerInteraction.invoke()
-                if (showPlay) {
-                    player.play()
-                    skipBackOnResume?.let {
-                        player.seekBack(it)
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            modifier = modifier.focusGroup(),
+            horizontalArrangement = Arrangement.spacedBy(buttonSpacing),
+        ) {
+            PlaybackButton(
+                iconRes = R.drawable.baseline_skip_previous_24,
+                onClick = {
+                    onControllerInteraction.invoke()
+                    onPlaybackActionClick.invoke(PlaybackAction.Previous)
+                },
+                enabled = previousEnabled,
+                onControllerInteraction = onControllerInteraction,
+            )
+            PlaybackButton(
+                iconRes = R.drawable.baseline_fast_rewind_24,
+                onClick = {
+                    onControllerInteraction.invoke()
+                    player.seekBack(seekBack)
+                },
+                onControllerInteraction = onControllerInteraction,
+            )
+            PlaybackButton(
+                modifier = Modifier.focusRequester(initialFocusRequester),
+                iconRes = if (showPlay) R.drawable.baseline_play_arrow_24 else R.drawable.baseline_pause_24,
+                onClick = {
+                    onControllerInteraction.invoke()
+                    if (showPlay) {
+                        player.play()
+                        skipBackOnResume?.let {
+                            player.seekBack(it)
+                        }
+                    } else {
+                        player.pause()
                     }
-                } else {
-                    player.pause()
-                }
-            },
-            onControllerInteraction = onControllerInteraction,
-        )
-        PlaybackButton(
-            iconRes = R.drawable.baseline_fast_forward_24,
-            onClick = {
-                onControllerInteraction.invoke()
-                player.seekForward(seekForward)
-            },
-            onControllerInteraction = onControllerInteraction,
-        )
-        PlaybackButton(
-            iconRes = R.drawable.baseline_skip_next_24,
-            onClick = {
-                onControllerInteraction.invoke()
-                onPlaybackActionClick.invoke(PlaybackAction.Next)
-            },
-            enabled = nextEnabled,
-            onControllerInteraction = onControllerInteraction,
-        )
+                },
+                onControllerInteraction = onControllerInteraction,
+            )
+            PlaybackButton(
+                iconRes = R.drawable.baseline_fast_forward_24,
+                onClick = {
+                    onControllerInteraction.invoke()
+                    player.seekForward(seekForward)
+                },
+                onControllerInteraction = onControllerInteraction,
+            )
+            PlaybackButton(
+                iconRes = R.drawable.baseline_skip_next_24,
+                onClick = {
+                    onControllerInteraction.invoke()
+                    onPlaybackActionClick.invoke(PlaybackAction.Next)
+                },
+                enabled = nextEnabled,
+                onControllerInteraction = onControllerInteraction,
+            )
+        }
     }
 }
 
@@ -536,12 +566,19 @@ fun <T> BottomDialog(
     gravity: Int,
     currentChoice: BottomDialogItem<T>? = null,
 ) {
+    val initialIndex =
+        remember(choices, currentChoice) { choices.indexOfFirstOrNull { it == currentChoice } } ?: 0
+    val listState =
+        rememberLazyListState(
+            initialFirstVisibleItemIndex = initialIndex,
+        )
     val focusRequesters = remember(choices.size) { List(choices.size) { FocusRequester() } }
+    val bringIntoViewRequesters =
+        remember(choices.size) { List(choices.size) { BringIntoViewRequester() } }
     if (currentChoice != null) {
         LaunchedEffect(Unit) {
-            choices.indexOfFirstOrNull { it == currentChoice }?.let {
-                focusRequesters.getOrNull(it)?.tryRequestFocus()
-            }
+            bringIntoViewRequesters.getOrNull(initialIndex)?.bringIntoView()
+            focusRequesters.getOrNull(initialIndex)?.tryRequestFocus()
         }
     }
     // TODO enforcing a width ends up ignore the gravity
@@ -566,6 +603,7 @@ fun <T> BottomDialog(
                     ),
         ) {
             LazyColumn(
+                state = listState,
                 modifier =
                     Modifier
                         .fillMaxWidth()
@@ -599,7 +637,10 @@ fun <T> BottomDialog(
                             }
                         },
                         interactionSource = interactionSource,
-                        modifier = Modifier.focusRequester(focusRequesters[index]),
+                        modifier =
+                            Modifier
+                                .bringIntoViewRequester(bringIntoViewRequesters[index])
+                                .focusRequester(focusRequesters[index]),
                     )
                 }
             }
@@ -625,7 +666,7 @@ private fun ButtonPreview() {
                 onControllerInteraction = {},
             )
             PlaybackFaButton(
-                iconRes = R.string.fa_shuffle,
+                iconRes = R.string.fa_volume_high,
                 onClick = {},
                 onControllerInteraction = {},
                 textColor = Color.Green,

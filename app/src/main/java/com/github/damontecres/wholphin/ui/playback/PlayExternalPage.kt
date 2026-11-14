@@ -25,6 +25,7 @@ import com.github.damontecres.wholphin.data.ItemPlaybackDao
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.PlaylistItem
+import com.github.damontecres.wholphin.data.model.SeriesTrackChoiceType
 import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.PlaylistCreationResult
@@ -142,7 +143,7 @@ class PlayExternalViewModel
                             throw IllegalArgumentException("Item is not playable and not PlaybackList: ${queriedItem.type}")
                         }
                     val playbackConfig =
-                        serverRepository.currentUser.value?.let { user ->
+                        serverRepository.currentUser?.let { user ->
                             itemPlaybackDao.getItem(user, playlistItem.id)?.let {
                                 Timber.v("Fetched itemPlayback from DB: %s", it)
                                 if (it.sourceId != null) {
@@ -158,7 +159,11 @@ class PlayExternalViewModel
                             is PlaylistItem.Media -> playlistItem.item
                         }
                     val mediaSource = streamChoiceService.chooseSource(item.data, playbackConfig)
-                    val plc = streamChoiceService.getPlaybackLanguageChoice(item.data)
+                    val subtitleStc =
+                        streamChoiceService.getSeriesTrackChoices(
+                            item.data,
+                            SeriesTrackChoiceType.SUBTITLE,
+                        )
                     if (mediaSource == null) {
                         Timber.w("Media source is null")
                         return@launchDefault
@@ -168,13 +173,14 @@ class PlayExternalViewModel
                     val subtitleIndex =
                         streamChoiceService
                             .chooseSubtitleStream(
+                                item = item.data,
                                 source = mediaSource,
                                 audioStream = null,
-                                seriesId = item.data.seriesId,
                                 itemPlayback = playbackConfig,
-                                plc = plc,
+                                stc = subtitleStc,
                                 prefs = prefs,
-                            )?.index
+                            )?.stream
+                            ?.index
                     val externalSubtitles =
                         mediaSource.mediaStreams
                             ?.filter { it.isExternal }
@@ -237,6 +243,8 @@ class PlayExternalViewModel
                             }
 
                             // VLC
+                            // A zero position alone does not override VLC's saved resume position.
+                            putExtra("from_start", positionMs == 0L)
                             if (subtitleUrls.isNotEmpty()) {
                                 putExtra("subtitles_location", subtitleUrls.first().toString())
                             }
@@ -338,12 +346,15 @@ class PlayExternalViewModel
                             }
                         }
                         Timber.v("Result position: %s", position?.milliseconds)
+                        if (position != null && position < 0L) {
+                            Timber.w("Unknown stop position for external playback")
+                        }
                         if (position != null || result.data?.action != null) {
                             api.playStateApi.reportPlaybackStopped(
                                 PlaybackStopInfo(
                                     itemId = itemId,
                                     mediaSourceId = mediaSourceId,
-                                    positionTicks = position?.milliseconds?.inWholeTicks,
+                                    positionTicks = position?.milliseconds?.inWholeTicks?.takeIf { it >= 0 },
                                     failed = false,
                                 ),
                             )

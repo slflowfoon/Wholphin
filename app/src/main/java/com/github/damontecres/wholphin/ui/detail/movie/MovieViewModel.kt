@@ -13,21 +13,20 @@ import com.github.damontecres.wholphin.data.model.DiscoverItem
 import com.github.damontecres.wholphin.data.model.ItemPlayback
 import com.github.damontecres.wholphin.data.model.Person
 import com.github.damontecres.wholphin.data.model.Trailer
-import com.github.damontecres.wholphin.preferences.ThemeSongVolume
 import com.github.damontecres.wholphin.services.BackdropService
 import com.github.damontecres.wholphin.services.ExtrasService
 import com.github.damontecres.wholphin.services.FavoriteWatchManager
 import com.github.damontecres.wholphin.services.MediaManagementService
-import com.github.damontecres.wholphin.services.MediaReportService
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.PeopleFavorites
 import com.github.damontecres.wholphin.services.SeerrService
+import com.github.damontecres.wholphin.services.ServerReportService
 import com.github.damontecres.wholphin.services.StreamChoiceService
 import com.github.damontecres.wholphin.services.ThemeSongPlayer
 import com.github.damontecres.wholphin.services.TrailerService
 import com.github.damontecres.wholphin.services.UserPreferencesService
 import com.github.damontecres.wholphin.services.deleteItem
-import com.github.damontecres.wholphin.ui.SlimItemFields
+import com.github.damontecres.wholphin.ui.ItemRowFields
 import com.github.damontecres.wholphin.ui.launchDefault
 import com.github.damontecres.wholphin.ui.launchIO
 import com.github.damontecres.wholphin.ui.letNotEmpty
@@ -42,7 +41,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.libraryApi
@@ -63,7 +62,7 @@ class MovieViewModel
         val serverRepository: ServerRepository,
         val itemPlaybackRepository: ItemPlaybackRepository,
         val streamChoiceService: StreamChoiceService,
-        val mediaReportService: MediaReportService,
+        val serverReportService: ServerReportService,
         private val themeSongPlayer: ThemeSongPlayer,
         private val favoriteWatchManager: FavoriteWatchManager,
         private val peopleFavorites: PeopleFavorites,
@@ -85,18 +84,9 @@ class MovieViewModel
         init {
             init()
             viewModelScope.launchDefault {
-                userPreferencesService.flow.collectLatest { preferences ->
+                mediaManagementService.collectCanDelete(state.map { it.movie }) { canDelete ->
                     _state.update {
-                        val canDelete =
-                            it.movie?.let {
-                                mediaManagementService.canDelete(
-                                    it,
-                                    preferences.appPreferences,
-                                )
-                            }
-                        it.copy(
-                            canDelete = canDelete ?: false,
-                        )
+                        it.copy(canDelete = canDelete)
                     }
                 }
             }
@@ -127,7 +117,7 @@ class MovieViewModel
                         userPreferencesService.getCurrent(),
                     )
                 val remoteTrailers = trailerService.getRemoteTrailers(movie)
-                val chapters = Chapter.fromDto(movie.data, api)
+                val chapters = Chapter.fromDto(movie.data)
                 _state.update {
                     it.copy(
                         loading = DataLoadingState.Success(movie),
@@ -176,9 +166,9 @@ class MovieViewModel
                         api.libraryApi
                             .getSimilarItems(
                                 GetSimilarItemsRequest(
-                                    userId = serverRepository.currentUser.value?.id,
+                                    userId = serverRepository.currentUser?.id,
                                     itemId = itemId,
-                                    fields = SlimItemFields,
+                                    fields = ItemRowFields,
                                     limit = 25,
                                 ),
                             ).content.items
@@ -233,11 +223,10 @@ class MovieViewModel
         ) {
             viewModelScope.launchIO {
                 val prefs = userPreferencesService.getCurrent()
-                val plc = streamChoiceService.getPlaybackLanguageChoice(item.data)
                 val result = itemPlaybackRepository.savePlayVersion(item.id, sourceId)
                 val chosen =
                     result?.let {
-                        itemPlaybackRepository.getChosenItemFromPlayback(item, result, plc, prefs)
+                        itemPlaybackRepository.getChosenItemFromPlayback(item, result, prefs)
                     }
                 _state.update { it.copy(chosenStreams = chosen) }
             }
@@ -251,7 +240,6 @@ class MovieViewModel
         ) {
             viewModelScope.launchIO {
                 val prefs = userPreferencesService.getCurrent()
-                val plc = streamChoiceService.getPlaybackLanguageChoice(item.data)
                 val result =
                     itemPlaybackRepository.saveTrackSelection(
                         item = item,
@@ -259,20 +247,14 @@ class MovieViewModel
                         trackIndex = trackIndex,
                         type = type,
                     )
-                val chosen =
-                    result?.let {
-                        itemPlaybackRepository.getChosenItemFromPlayback(item, result, plc, prefs)
-                    }
+                val chosen = itemPlaybackRepository.getChosenItemFromPlayback(item, result, prefs)
                 _state.update { it.copy(chosenStreams = chosen) }
             }
         }
 
-        fun maybePlayThemeSong(
-            seriesId: UUID,
-            playThemeSongs: ThemeSongVolume,
-        ) {
+        fun maybePlayThemeSong(itemId: UUID) {
             viewModelScope.launchIO {
-                themeSongPlayer.playThemeFor(seriesId, playThemeSongs)
+                themeSongPlayer.playThemeFor(itemId)
                 addCloseable {
                     themeSongPlayer.stop()
                 }

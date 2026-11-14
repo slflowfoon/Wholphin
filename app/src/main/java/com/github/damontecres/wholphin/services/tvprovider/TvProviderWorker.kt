@@ -19,11 +19,13 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.github.damontecres.wholphin.MainActivity
 import com.github.damontecres.wholphin.R
+import com.github.damontecres.wholphin.data.RestoredSession
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.preferences.AppPreference
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.services.ImageUrlService
+import com.github.damontecres.wholphin.services.IntentService
 import com.github.damontecres.wholphin.services.LatestNextUpService
 import com.github.damontecres.wholphin.ui.SlimItemFields
 import dagger.assisted.Assisted
@@ -69,12 +71,8 @@ class TvProviderWorker
 
             if (api.baseUrl.isNullOrBlank() || api.accessToken.isNullOrBlank()) {
                 // Not active
-                var currentUser = serverRepository.current.value
-                if (currentUser == null) {
-                    serverRepository.restoreSession(serverId, userId)
-                    currentUser = serverRepository.current.value
-                }
-                if (currentUser == null) {
+                val result = serverRepository.restoreLastSession()
+                if (result !is RestoredSession.Success) {
                     Timber.w("No user found during run")
                     return Result.failure()
                 }
@@ -93,19 +91,19 @@ class TvProviderWorker
                 val currentItems = getCurrentTvChannelNextUp()
                 val currentItemIds = currentItems.map { it.internalProviderId }
 
-                // TODO Remove after v0.3.10 release
-                // This cleans up duplicates added to the watch next due a bug in https://github.com/damontecres/Wholphin/pull/372
-                currentItems.groupBy { it.internalProviderId }.forEach { (id, items) ->
-                    if (items.size > 1) {
-                        Timber.v("Duplicate ID %s", id)
-                        items
-                            .subList(1, items.size)
-                            .map { TvContractCompat.buildWatchNextProgramUri(it.id) }
-                            .forEach {
-                                context.contentResolver.delete(it, null, null)
-                            }
+                // TODO Remove after v0.6.5 release
+                // This cleans up movies that are using the poster image, see https://github.com/damontecres/Wholphin/issues/1425
+                currentItems
+                    .filter {
+                        it.type == WatchNextPrograms.TYPE_MOVIE &&
+                            it.posterArtUri
+                                .toString()
+                                .lowercase()
+                                .contains("primary")
+                    }.map { TvContractCompat.buildWatchNextProgramUri(it.id) }
+                    .forEach {
+                        context.contentResolver.delete(it, null, null)
                     }
-                }
                 // End temporary clean up
 
                 val toRemove =
@@ -220,33 +218,33 @@ class TvProviderWorker
                     val imageType =
                         when (item.type) {
                             BaseItemKind.EPISODE -> ImageType.THUMB
-                            else -> ImageType.PRIMARY
+                            else -> if (ImageType.THUMB in item.data.imageTags.orEmpty()) ImageType.THUMB else ImageType.PRIMARY
                         }
                     setPosterArtUri(imageUrlService.getItemImageUrl(item, imageType)!!.toUri())
 
                     setIntent(
                         Intent(context, MainActivity::class.java)
-                            .putExtra(MainActivity.INTENT_ITEM_ID, item.id.toString())
-                            .putExtra(MainActivity.INTENT_ITEM_TYPE, item.type.serialName)
+                            .putExtra(IntentService.INTENT_ITEM_ID, item.id.toString())
+                            .putExtra(IntentService.INTENT_ITEM_TYPE, item.type.serialName)
                             .apply {
                                 if (item.type == BaseItemKind.EPISODE) {
                                     putExtra(
-                                        MainActivity.INTENT_SERIES_ID,
+                                        IntentService.INTENT_SERIES_ID,
                                         dto.seriesId?.toString(),
                                     )
                                     putExtra(
-                                        MainActivity.INTENT_SEASON_ID,
+                                        IntentService.INTENT_SEASON_ID,
                                         dto.seasonId?.toString(),
                                     )
                                     dto.parentIndexNumber?.let {
                                         putExtra(
-                                            MainActivity.INTENT_SEASON_NUMBER,
+                                            IntentService.INTENT_SEASON_NUMBER,
                                             it,
                                         )
                                     }
                                     dto.indexNumber?.let {
                                         putExtra(
-                                            MainActivity.INTENT_EPISODE_NUMBER,
+                                            IntentService.INTENT_EPISODE_NUMBER,
                                             it,
                                         )
                                     }
@@ -264,6 +262,7 @@ class TvProviderWorker
                     .getLatestMedia(
                         GetLatestMediaRequest(
                             fields = SlimItemFields,
+                            includeItemTypes = listOf(BaseItemKind.MOVIE, BaseItemKind.EPISODE),
                             imageTypeLimit = 1,
                             parentId = null,
                             groupItems = true,
@@ -362,27 +361,27 @@ class TvProviderWorker
 
                     setIntent(
                         Intent(context, MainActivity::class.java)
-                            .putExtra(MainActivity.INTENT_ITEM_ID, item.id.toString())
-                            .putExtra(MainActivity.INTENT_ITEM_TYPE, item.type.serialName)
+                            .putExtra(IntentService.INTENT_ITEM_ID, item.id.toString())
+                            .putExtra(IntentService.INTENT_ITEM_TYPE, item.type.serialName)
                             .apply {
                                 if (item.type == BaseItemKind.EPISODE) {
                                     putExtra(
-                                        MainActivity.INTENT_SERIES_ID,
+                                        IntentService.INTENT_SERIES_ID,
                                         dto.seriesId?.toString(),
                                     )
                                     putExtra(
-                                        MainActivity.INTENT_SEASON_ID,
+                                        IntentService.INTENT_SEASON_ID,
                                         dto.seasonId?.toString(),
                                     )
                                     dto.parentIndexNumber?.let {
                                         putExtra(
-                                            MainActivity.INTENT_SEASON_NUMBER,
+                                            IntentService.INTENT_SEASON_NUMBER,
                                             it,
                                         )
                                     }
                                     dto.indexNumber?.let {
                                         putExtra(
-                                            MainActivity.INTENT_EPISODE_NUMBER,
+                                            IntentService.INTENT_EPISODE_NUMBER,
                                             it,
                                         )
                                     }

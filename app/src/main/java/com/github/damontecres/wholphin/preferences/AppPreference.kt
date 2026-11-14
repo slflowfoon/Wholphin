@@ -9,6 +9,7 @@ import com.github.damontecres.wholphin.BuildConfig
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.WholphinApplication
 import com.github.damontecres.wholphin.services.UpdateChecker
+import com.github.damontecres.wholphin.ui.formatMaxBitrate
 import com.github.damontecres.wholphin.ui.nav.Destination
 import com.github.damontecres.wholphin.ui.preferences.ConditionalPreferences
 import com.github.damontecres.wholphin.ui.preferences.PreferenceGroup
@@ -53,7 +54,10 @@ sealed interface AppPreference<Pref, T> {
         value: T?,
     ): String? = null
 
-    fun validate(value: T): PreferenceValidation = PreferenceValidation.Valid
+    fun validate(
+        prefs: Pref,
+        value: T,
+    ): PreferenceValidation = PreferenceValidation.Valid
 
     companion object {
         val SkipForward =
@@ -202,18 +206,6 @@ sealed interface AppPreference<Pref, T> {
                 },
             )
 
-        val CombineContinueNext =
-            AppSwitchPreference<AppPreferences>(
-                title = R.string.combine_continue_next,
-                defaultValue = false,
-                getter = { it.homePagePreferences.combineContinueNext },
-                setter = { prefs, value ->
-                    prefs.updateHomePagePreferences { combineContinueNext = value }
-                },
-                summaryOn = R.string.enabled,
-                summaryOff = R.string.disabled,
-            )
-
         val RewatchNextUp =
             AppSwitchPreference<AppPreferences>(
                 title = R.string.rewatch_next_up,
@@ -224,6 +216,19 @@ sealed interface AppPreference<Pref, T> {
                 },
                 summaryOn = R.string.enabled,
                 summaryOff = R.string.disabled,
+            )
+
+        val HomeClickToPlay =
+            AppChoicePreference<AppPreferences, Boolean>(
+                title = R.string.continue_watching_click_behavior,
+                defaultValue = false,
+                getter = { it.homePagePreferences.clickToPlay },
+                setter = { prefs, value ->
+                    prefs.updateHomePagePreferences { clickToPlay = value }
+                },
+                displayValues = R.array.home_click_to_play_options,
+                indexToValue = { it != 0 },
+                valueToIndex = { if (it) 1 else 0 },
             )
 
         val PlayThemeMusic =
@@ -341,7 +346,7 @@ sealed interface AppPreference<Pref, T> {
 
         const val MEGA_BIT = 1024 * 1024L
         const val DEFAULT_BITRATE = 100 * MEGA_BIT
-        private val bitrateValues =
+        val bitrateValues =
             listOf(
                 500 * 1024L,
                 750 * 1024L,
@@ -374,15 +379,24 @@ sealed interface AppPreference<Pref, T> {
                 summarizer = { value ->
                     if (value != null) {
                         val v = bitrateValues.getOrNull(value.toInt()) ?: DEFAULT_BITRATE
-                        if (v < MEGA_BIT) {
-                            "${v / 1024} kbps"
-                        } else {
-                            "${v / MEGA_BIT} Mbps"
-                        }
+                        formatMaxBitrate(v)
                     } else {
                         null
                     }
                 },
+            )
+
+        val MaxResolutionPref =
+            AppChoicePreference<AppPreferences, MaxResolution>(
+                title = R.string.max_resolution,
+                defaultValue = MaxResolution.NO_LIMIT,
+                getter = { MaxResolution.fromValue(it.playbackPreferences.overrides.maxResolution) },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { maxResolution = value.value }
+                },
+                displayValues = R.array.max_resolution_options,
+                indexToValue = { MaxResolution.entries.getOrNull(it) ?: MaxResolution.NO_LIMIT },
+                valueToIndex = { it.ordinal },
             )
 
         val Ac3Supported =
@@ -391,18 +405,25 @@ sealed interface AppPreference<Pref, T> {
                 defaultValue = true,
                 getter = { it.playbackPreferences.overrides.ac3Supported },
                 setter = { prefs, value ->
-                    prefs.updatePlaybackOverrides { ac3Supported = value }
+                    if (!value) prefs.updateExperimentalPreferences { preferAc3Surround = false }
+                    prefs.updatePlaybackOverrides {
+                        ac3Supported = value
+                    }
                 },
                 summaryOn = R.string.enabled,
                 summaryOff = R.string.disabled,
             )
+
         val DownMixStereo =
             AppSwitchPreference<AppPreferences>(
                 title = R.string.downmix_stereo,
                 defaultValue = false,
                 getter = { it.playbackPreferences.overrides.downmixStereo },
                 setter = { prefs, value ->
-                    prefs.updatePlaybackOverrides { downmixStereo = value }
+                    if (value) prefs.updateExperimentalPreferences { preferAc3Surround = false }
+                    prefs.updatePlaybackOverrides {
+                        downmixStereo = value
+                    }
                 },
                 summaryOn = R.string.enabled,
                 summaryOff = R.string.disabled,
@@ -432,15 +453,69 @@ sealed interface AppPreference<Pref, T> {
                 summaryOff = R.string.disabled,
             )
 
-        val DirectPlayDoviProfile7 =
-            AppSwitchPreference<AppPreferences>(
-                title = R.string.force_dovi_profile_7,
-                defaultValue = false,
-                getter = { it.playbackPreferences.overrides.directPlayDolbyVisionEL },
+        val Hdr10Override =
+            AppChoicePreference<AppPreferences, HdrOverrideMode>(
+                title = R.string.hdr10_override,
+                defaultValue = HdrOverrideMode.HDR_OVERRIDE_AUTO,
+                getter = { it.playbackPreferences.overrides.hdr10Override },
                 setter = { prefs, value ->
-                    prefs.updatePlaybackOverrides { directPlayDolbyVisionEL = value }
+                    prefs.updatePlaybackOverrides { hdr10Override = value }
                 },
-                summary = R.string.force_dovi_profile_7_summary,
+                displayValues = R.array.hdr_override_modes,
+                indexToValue = { HdrOverrideMode.forNumber(it) ?: HdrOverrideMode.HDR_OVERRIDE_AUTO },
+                valueToIndex = { if (it != HdrOverrideMode.UNRECOGNIZED) it.number else 0 },
+            )
+
+        val Hdr10PlusOverride =
+            AppChoicePreference<AppPreferences, HdrOverrideMode>(
+                title = R.string.hdr10_plus_override,
+                defaultValue = HdrOverrideMode.HDR_OVERRIDE_AUTO,
+                getter = { it.playbackPreferences.overrides.hdr10PlusOverride },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { hdr10PlusOverride = value }
+                },
+                displayValues = R.array.hdr_override_modes,
+                indexToValue = { HdrOverrideMode.forNumber(it) ?: HdrOverrideMode.HDR_OVERRIDE_AUTO },
+                valueToIndex = { if (it != HdrOverrideMode.UNRECOGNIZED) it.number else 0 },
+            )
+
+        val DoviProfile5Override =
+            AppChoicePreference<AppPreferences, HdrOverrideMode>(
+                title = R.string.dovi_profile_5,
+                defaultValue = HdrOverrideMode.HDR_OVERRIDE_AUTO,
+                getter = { it.playbackPreferences.overrides.doviProfile5Override },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { doviProfile5Override = value }
+                },
+                displayValues = R.array.hdr_override_modes,
+                indexToValue = { HdrOverrideMode.forNumber(it) ?: HdrOverrideMode.HDR_OVERRIDE_AUTO },
+                valueToIndex = { if (it != HdrOverrideMode.UNRECOGNIZED) it.number else 0 },
+            )
+
+        val DoviProfile7Override =
+            AppChoicePreference<AppPreferences, HdrOverrideMode>(
+                title = R.string.dovi_profile_7,
+                defaultValue = HdrOverrideMode.HDR_OVERRIDE_AUTO,
+                getter = { it.playbackPreferences.overrides.doviProfile7Override },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { doviProfile7Override = value }
+                },
+                displayValues = R.array.hdr_override_modes,
+                indexToValue = { HdrOverrideMode.forNumber(it) ?: HdrOverrideMode.HDR_OVERRIDE_AUTO },
+                valueToIndex = { if (it != HdrOverrideMode.UNRECOGNIZED) it.number else 0 },
+            )
+
+        val DoviProfile8Override =
+            AppChoicePreference<AppPreferences, HdrOverrideMode>(
+                title = R.string.dovi_profile_8,
+                defaultValue = HdrOverrideMode.HDR_OVERRIDE_AUTO,
+                getter = { it.playbackPreferences.overrides.doviProfile8Override },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { doviProfile8Override = value }
+                },
+                displayValues = R.array.hdr_override_modes,
+                indexToValue = { HdrOverrideMode.forNumber(it) ?: HdrOverrideMode.HDR_OVERRIDE_AUTO },
+                valueToIndex = { if (it != HdrOverrideMode.UNRECOGNIZED) it.number else 0 },
             )
 
         val DecodeAv1 =
@@ -504,6 +579,25 @@ sealed interface AppPreference<Pref, T> {
                 summaryOff = R.string.disabled,
             )
 
+        val DisplayTogglesPref =
+            AppMultiChoicePreference<AppPreferences, DisplayToggle>(
+                title = R.string.display_toggles_title,
+                summary = R.string.display_toggles_summary,
+                defaultValue = DisplayToggle.entries.filterNot { it == DisplayToggle.UNRECOGNIZED },
+                allValues = DisplayToggle.entries.filterNot { it == DisplayToggle.UNRECOGNIZED },
+                displayValues = R.array.display_toggle_types,
+                displayValuesSubtitles = R.array.display_toggle_types_subtitles,
+                getter = {
+                    it.interfacePreferences.displayTogglesList
+                },
+                setter = { prefs, value ->
+                    prefs.updateInterfacePreferences {
+                        clearDisplayToggles()
+                        addAllDisplayToggles(value)
+                    }
+                },
+            )
+
         val InstalledVersion =
             AppClickablePreference<AppPreferences>(
                 title = R.string.installed_version,
@@ -551,6 +645,13 @@ sealed interface AppPreference<Pref, T> {
             AppDestinationPreference<AppPreferences>(
                 title = R.string.advanced_settings,
                 destination = Destination.Settings(PreferenceScreenOption.ADVANCED),
+            )
+
+        val UserProfileSettings =
+            AppDestinationPreference<AppPreferences>(
+                title = R.string.override_user_profile_settings,
+                destination = Destination.UserAppPreferences,
+                summary = R.string.override_user_profile_settings_summary,
             )
 
         val SkipIntros =
@@ -625,6 +726,20 @@ sealed interface AppPreference<Pref, T> {
                 destination = Destination.Settings(PreferenceScreenOption.SKIP_SEGMENTS),
             )
 
+        val DpadSeekModePref =
+            AppChoicePreference<AppPreferences, DpadSeekMode>(
+                title = R.string.d_pad_seek_mode_title,
+                defaultValue = DpadSeekMode.SEEKBAR_MINIMAL,
+                getter = { it.playbackPreferences.dpadSeekMode },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackPreferences { dpadSeekMode = value }
+                },
+                displayValues = R.array.dpad_seek_mode_options,
+                indexToValue = { DpadSeekMode.forNumber(it) },
+                valueToIndex = { if (it != DpadSeekMode.UNRECOGNIZED) it.number else 0 },
+                subtitles = R.array.dpad_seek_mode_summaries,
+            )
+
         val GlobalContentScale =
             AppChoicePreference<AppPreferences, PrefContentScale>(
                 title = R.string.global_content_scale,
@@ -671,6 +786,13 @@ sealed interface AppPreference<Pref, T> {
                 title = R.string.customize_home,
                 destination = Destination.HomeSettings,
                 summary = R.string.customize_home_summary,
+            )
+
+        val UserInterfaceLanguage =
+            AppClickablePreference<AppPreferences>(
+                title = R.string.user_interface_language,
+                getter = { },
+                setter = { prefs, _ -> prefs },
             )
 
         val SendCrashReports =
@@ -848,6 +970,12 @@ sealed interface AppPreference<Pref, T> {
                 destination = Destination.Settings(PreferenceScreenOption.MPV),
             )
 
+        val HdrFormatSettings =
+            AppDestinationPreference<AppPreferences>(
+                title = R.string.hdr_formats,
+                destination = Destination.Settings(PreferenceScreenOption.HDR_FORMATS),
+            )
+
         val MpvHardwareDecoding =
             AppSwitchPreference<AppPreferences>(
                 title = R.string.mpv_hardware_decoding,
@@ -902,9 +1030,9 @@ sealed interface AppPreference<Pref, T> {
                 summaryOff = R.string.disabled,
             )
 
-        val RequireProfilePin =
+        val ProtectProfilePreference =
             AppClickablePreference<AppPreferences>(
-                title = R.string.require_pin_code,
+                title = R.string.profile_protection,
             )
 
         val ImageDiskCacheSize =
@@ -1046,8 +1174,8 @@ val basicPreferences =
             preferences =
                 listOf(
                     AppPreference.SignInAuto,
-                    AppPreference.PlayThemeMusic,
                     AppPreference.RememberSelectedTab,
+                    AppPreference.PlayThemeMusic,
                     AppPreference.SubtitleStyle,
                     AppPreference.ThemeColors,
                     AppPreference.ScreensaverSettings,
@@ -1076,9 +1204,11 @@ val basicPreferences =
             title = R.string.profile_specific_settings,
             preferences =
                 listOf(
-                    AppPreference.RequireProfilePin,
+                    AppPreference.ProtectProfilePreference,
                     AppPreference.CustomizeHome,
                     AppPreference.UserPinnedNavDrawerItems,
+                    AppPreference.UserInterfaceLanguage,
+                    AppPreference.UserProfileSettings,
                 ),
         ),
         PreferenceGroup(
@@ -1110,8 +1240,17 @@ private val ExoPlayerSettings =
         AppPreference.Ac3Supported,
         AppPreference.AssSubtitleMode,
         AppPreference.DirectPlayPgs,
-        AppPreference.DirectPlayDoviProfile7,
         AppPreference.DecodeAv1,
+        AppPreference.HdrFormatSettings,
+    )
+
+private val HdrFormatSettings =
+    listOf(
+        AppPreference.Hdr10Override,
+        AppPreference.Hdr10PlusOverride,
+        AppPreference.DoviProfile5Override,
+        AppPreference.DoviProfile7Override,
+        AppPreference.DoviProfile8Override,
     )
 
 val ExoPlayerPreferences =
@@ -1119,6 +1258,14 @@ val ExoPlayerPreferences =
         PreferenceGroup(
             title = R.string.exoplayer_options,
             preferences = ExoPlayerSettings,
+        ),
+    )
+
+val HdrFormatPreferences =
+    listOf(
+        PreferenceGroup(
+            title = R.string.hdr_formats,
+            preferences = HdrFormatSettings,
         ),
     )
 
@@ -1160,13 +1307,12 @@ val advancedPreferences =
                 preferences =
                     listOf(
                         AppPreference.ShowClock,
+                        AppPreference.BackdropStylePref,
                         AppPreference.ShowLogos,
                         AppPreference.ManageMedia,
-                        AppPreference.CombineContinueNext,
+                        AppPreference.DisplayTogglesPref,
                         // Temporarily disabled, see https://github.com/damontecres/Wholphin/pull/127#issuecomment-3478058418
 //                    AppPreference.NavDrawerSwitchOnFocus,
-                        AppPreference.ControllerTimeout,
-                        AppPreference.BackdropStylePref,
                         AppPreference.SlideshowDuration,
                         AppPreference.SlideshowPlayVideos,
                     ),
@@ -1178,9 +1324,12 @@ val advancedPreferences =
                 preferences =
                     listOf(
                         AppPreference.OneClickPause,
+                        AppPreference.ControllerTimeout,
                         AppPreference.CinemaMode,
                         AppPreference.GlobalContentScale,
                         AppPreference.SkipSegments,
+                        AppPreference.DpadSeekModePref,
+                        AppPreference.MaxResolutionPref,
                         AppPreference.MaxBitrate,
                         AppPreference.RefreshRateSwitching,
                         AppPreference.ResolutionSwitching,
@@ -1239,7 +1388,15 @@ val advancedPreferences =
                         AppPreference.DebugLogging,
                         AppPreference.ImageDiskCacheSize,
                         AppPreference.ClearImageCache,
+                        ExperimentalPreference.Enable,
                         AppPreference.OssLicenseInfo,
+                    ),
+                conditionalPreferences =
+                    listOf(
+                        ConditionalPreferences(
+                            condition = { it.experimentalPreferences.enabled },
+                            preferences = listOf(ExperimentalPreference.ExperimentalSettings),
+                        ),
                     ),
             ),
         )
@@ -1269,6 +1426,14 @@ val screensaverPreferences =
                     ScreensaverPreference.Start,
                 ),
         ),
+        PreferenceGroup(
+            title = R.string.dim_screen,
+            preferences =
+                listOf(
+                    ScreensaverPreference.DimToggle,
+                    ScreensaverPreference.DimPercentage,
+                ),
+        ),
     )
 
 data class AppSwitchPreference<Pref>(
@@ -1276,11 +1441,16 @@ data class AppSwitchPreference<Pref>(
     override val defaultValue: Boolean,
     override val getter: (prefs: Pref) -> Boolean,
     override val setter: (prefs: Pref, value: Boolean) -> Pref,
-    val validator: (value: Boolean) -> PreferenceValidation = { PreferenceValidation.Valid },
+    val validator: (prefs: Pref, value: Boolean) -> PreferenceValidation = { _, _ -> PreferenceValidation.Valid },
     @param:StringRes val summary: Int? = null,
     @param:StringRes val summaryOn: Int? = null,
     @param:StringRes val summaryOff: Int? = null,
 ) : AppPreference<Pref, Boolean> {
+    override fun validate(
+        prefs: Pref,
+        value: Boolean,
+    ): PreferenceValidation = validator.invoke(prefs, value)
+
     override fun summary(
         context: Context,
         value: Boolean?,
@@ -1325,6 +1495,7 @@ data class AppMultiChoicePreference<Pref, T>(
     override val getter: (prefs: Pref) -> List<T>,
     override val setter: (prefs: Pref, value: List<T>) -> Pref,
     @param:StringRes val summary: Int? = null,
+    @param:ArrayRes val displayValuesSubtitles: Int? = null,
 ) : AppPreference<Pref, List<T>>
 
 data class AppClickablePreference<Pref>(

@@ -1,6 +1,6 @@
 package com.github.damontecres.wholphin.ui.components
 
-import android.content.Context
+import android.content.res.Resources
 import android.view.KeyEvent
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
@@ -63,19 +63,20 @@ import androidx.tv.material3.Text
 import androidx.tv.material3.surfaceColorAtElevation
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.model.TrackIndex
+import com.github.damontecres.wholphin.preferences.lazyListWrapScrolling
+import com.github.damontecres.wholphin.services.StreamChoiceResult
 import com.github.damontecres.wholphin.ui.FontAwesome
-import com.github.damontecres.wholphin.ui.ifElse
+import com.github.damontecres.wholphin.ui.formatBitrate
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import com.github.damontecres.wholphin.ui.playback.SimpleMediaStream
-import com.github.damontecres.wholphin.ui.playback.isDown
-import com.github.damontecres.wholphin.ui.playback.isUp
-import com.github.damontecres.wholphin.ui.tryRequestFocus
+import com.github.damontecres.wholphin.ui.roundMinutes
 import com.github.damontecres.wholphin.util.ExceptionHandler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jellyfin.sdk.model.api.MediaSourceInfo
 import org.jellyfin.sdk.model.api.MediaStream
 import org.jellyfin.sdk.model.api.MediaStreamType
+import org.jellyfin.sdk.model.extensions.ticks
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import java.util.UUID
 
@@ -85,7 +86,7 @@ import java.util.UUID
 data class DialogParams(
     val fromLongClick: Boolean,
     val title: String,
-    val items: List<DialogItem>,
+    val items: List<DialogItemEntry>,
 )
 
 sealed interface DialogItemEntry
@@ -230,28 +231,35 @@ fun DialogPopup(
             onDismissRequest = onDismissRequest,
             properties = properties,
         ) {
+            val elevatedContainerColor =
+                MaterialTheme.colorScheme.surfaceColorAtElevation(elevation)
             DialogPopupContent(
                 title = title,
                 dialogItems = dialogItems,
                 waiting = waiting,
                 onDismissRequest = onDismissRequest,
                 dismissOnClick = dismissOnClick,
-                elevation = elevation,
                 modifier =
-                    Modifier.onKeyEvent { event ->
-                        val code = event.nativeKeyEvent.keyCode
-                        if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP &&
-                            code in
-                            setOf(
-                                KeyEvent.KEYCODE_ENTER,
-                                KeyEvent.KEYCODE_DPAD_CENTER,
-                                KeyEvent.KEYCODE_NUMPAD_ENTER,
-                            )
-                        ) {
-                            waiting = false
-                        }
-                        false
-                    },
+                    Modifier
+                        .onKeyEvent { event ->
+                            val code = event.nativeKeyEvent.keyCode
+                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP &&
+                                code in
+                                setOf(
+                                    KeyEvent.KEYCODE_ENTER,
+                                    KeyEvent.KEYCODE_DPAD_CENTER,
+                                    KeyEvent.KEYCODE_NUMPAD_ENTER,
+                                )
+                            ) {
+                                waiting = false
+                            }
+                            false
+                        }.shadow(elevation = elevation, shape = RoundedCornerShape(28.0.dp))
+                        .graphicsLayer {
+                            this.clip = true
+                            this.shape = RoundedCornerShape(28.0.dp)
+                        }.drawBehind { drawRect(color = elevatedContainerColor) }
+                        .padding(PaddingValues(24.dp)),
             )
         }
     }
@@ -265,20 +273,10 @@ fun DialogPopupContent(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     dismissOnClick: Boolean = true,
-    elevation: Dp = 8.dp,
 ) {
-    val elevatedContainerColor =
-        MaterialTheme.colorScheme.surfaceColorAtElevation(elevation)
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
-        modifier =
-            modifier
-                .shadow(elevation = elevation, shape = RoundedCornerShape(28.0.dp))
-                .graphicsLayer {
-                    this.clip = true
-                    this.shape = RoundedCornerShape(28.0.dp)
-                }.drawBehind { drawRect(color = elevatedContainerColor) }
-                .padding(PaddingValues(24.dp)),
+        modifier = modifier,
     ) {
         Text(
             text = title,
@@ -319,30 +317,13 @@ fun DialogPopupContent(
                             modifier =
                                 Modifier
                                     .focusRequester(focusRequesters[index])
-                                    .ifElse(
+                                    .lazyListWrapScrolling(
+                                        listState,
+                                        focused,
                                         index == 0,
-                                        Modifier.onKeyEvent {
-                                            if (focused && isUp(it) && it.type == KeyEventType.KeyDown) {
-                                                scope.launch {
-                                                    listState.animateScrollToItem(dialogItems.lastIndex)
-                                                    focusRequesters[dialogItems.lastIndex].tryRequestFocus()
-                                                }
-                                                return@onKeyEvent true
-                                            }
-                                            false
-                                        },
-                                    ).ifElse(
                                         index == dialogItems.lastIndex,
-                                        Modifier.onKeyEvent {
-                                            if (focused && isDown(it) && it.type == KeyEventType.KeyDown) {
-                                                scope.launch {
-                                                    listState.animateScrollToItem(0)
-                                                    focusRequesters[0].tryRequestFocus()
-                                                }
-                                                return@onKeyEvent true
-                                            }
-                                            false
-                                        },
+                                        focusRequesters[0],
+                                        focusRequesters[dialogItems.lastIndex],
                                     ),
                         )
                     }
@@ -469,12 +450,14 @@ fun ConfirmDialog(
     properties: DialogProperties = DialogProperties(),
     elevation: Dp = 1.dp,
     bodyColor: Color = MaterialTheme.colorScheme.onSurface,
+    @StringRes cancelStringRes: Int = R.string.cancel,
+    @StringRes confirmStringRes: Int = R.string.confirm,
 ) = BasicDialog(
     onDismissRequest = onCancel,
     properties = properties,
     elevation = elevation,
     content = {
-        ConfirmDialogContent(title, body, onCancel, onConfirm, Modifier, bodyColor)
+        ConfirmDialogContent(title, body, onCancel, onConfirm, Modifier, bodyColor, cancelStringRes, confirmStringRes)
     },
 )
 
@@ -489,6 +472,8 @@ fun ConfirmDialogContent(
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
     bodyColor: Color = MaterialTheme.colorScheme.onSurface,
+    @StringRes cancelStringRes: Int = R.string.cancel,
+    @StringRes confirmStringRes: Int = R.string.confirm,
 ) {
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -519,11 +504,11 @@ fun ConfirmDialogContent(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 TextButton(
-                    stringRes = R.string.cancel,
+                    stringRes = cancelStringRes,
                     onClick = onCancel,
                 )
                 TextButton(
-                    stringRes = R.string.confirm,
+                    stringRes = confirmStringRes,
                     onClick = onConfirm,
                 )
             }
@@ -608,14 +593,14 @@ fun ConfirmDeleteDialog(
 }
 
 fun chooseVersionParams(
-    context: Context,
+    resources: Resources,
     sources: List<MediaSourceInfo>,
     chosenSourceId: UUID?,
     onClick: (Int) -> Unit,
 ): DialogParams =
     DialogParams(
         fromLongClick = false,
-        title = context.getString(R.string.choose_stream, context.getString(R.string.version)),
+        title = resources.getString(R.string.choose_stream, resources.getString(R.string.version)),
         items =
             sources.filter { it.id.isNotNullOrBlank() }.mapIndexed { index, source ->
                 val uuid = source.id?.toUUIDOrNull()
@@ -630,7 +615,24 @@ fun chooseVersionParams(
                         SelectedLeadingContent(uuid != null && uuid == chosenSourceId)
                     },
                     supportingContent = {
-                        videoStream?.displayTitle?.let { Text(text = it) }
+                        val text =
+                            remember {
+                                buildList {
+                                    videoStream?.displayTitle?.let(::add)
+                                    source.bitrate?.let(::formatBitrate)?.let(::add)
+                                }.joinToString(", ")
+                            }
+                        Text(text)
+                    },
+                    trailingContent = {
+                        val runtime =
+                            remember {
+                                source.runTimeTicks
+                                    ?.ticks
+                                    ?.roundMinutes
+                                    .toString()
+                            }
+                        Text(runtime)
                     },
                     onClick = { onClick.invoke(index) },
                 )
@@ -649,16 +651,18 @@ fun resourceFor(type: MediaStreamType): Int =
     }
 
 fun chooseStream(
-    context: Context,
+    resources: Resources,
     streams: List<MediaStream>,
-    currentIndex: Int?,
+    streamChoice: StreamChoiceResult?,
     type: MediaStreamType,
     preferredSubtitleLanguage: String?,
     onClick: (Int) -> Unit,
-): DialogParams =
-    DialogParams(
+): DialogParams {
+    val filteredStreams = streams.filter { it.type == type }
+    val currentIndex = streamChoice?.stream?.index
+    return DialogParams(
         fromLongClick = false,
-        title = context.getString(R.string.choose_stream, context.getString(resourceFor(type))),
+        title = resources.getString(R.string.choose_stream, resources.getString(resourceFor(type))),
         items =
             buildList {
                 if (type == MediaStreamType.SUBTITLE) {
@@ -673,6 +677,16 @@ fun chooseStream(
                             },
                             supportingContent = {
                             },
+                            trailingContent =
+                                if (currentIndex == null && streamChoice != null) {
+                                    {
+                                        Text(
+                                            text = streamChoice.reason.description.getString(),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
                             onClick = { onClick.invoke(TrackIndex.DISABLED) },
                         ),
                     )
@@ -689,10 +703,12 @@ fun chooseStream(
                             onClick = { onClick.invoke(TrackIndex.ONLY_FORCED) },
                         ),
                     )
+                    if (filteredStreams.isNotEmpty()) {
+                        add(DialogItemDivider)
+                    }
                 }
                 addAll(
-                    streams
-                        .filter { it.type == type }
+                    filteredStreams
                         .let {
                             if (type == MediaStreamType.SUBTITLE && preferredSubtitleLanguage.isNotNullOrBlank()) {
                                 it.sortedByDescending { it.language != null && it.language == preferredSubtitleLanguage }
@@ -700,7 +716,7 @@ fun chooseStream(
                                 it
                             }
                         }.mapIndexed { index, stream ->
-                            val simpleStream = SimpleMediaStream.from(context, stream, true)
+                            val simpleStream = SimpleMediaStream.from(resources, stream, true)
                             DialogItem(
                                 selected = currentIndex == stream.index,
                                 leadingContent = {
@@ -708,15 +724,28 @@ fun chooseStream(
                                 },
                                 headlineContent = {
                                     Text(
-                                        text = simpleStream.streamTitle ?: simpleStream.displayTitle,
+                                        text =
+                                            simpleStream.streamTitle
+                                                ?: simpleStream.displayTitle,
                                     )
                                 },
                                 supportingContent = {
                                     if (simpleStream.streamTitle != null) Text(text = simpleStream.displayTitle)
                                 },
+                                trailingContent =
+                                    if (currentIndex == stream.index) {
+                                        {
+                                            Text(
+                                                text = streamChoice.reason.description.getString(),
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
                                 onClick = { onClick.invoke(stream.index) },
                             )
                         },
                 )
             },
     )
+}

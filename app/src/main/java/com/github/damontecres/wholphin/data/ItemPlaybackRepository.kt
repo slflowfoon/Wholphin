@@ -3,11 +3,14 @@ package com.github.damontecres.wholphin.data
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.ItemPlayback
 import com.github.damontecres.wholphin.data.model.ItemTrackModification
-import com.github.damontecres.wholphin.data.model.PlaybackLanguageChoice
+import com.github.damontecres.wholphin.data.model.RelativeMediaStream
+import com.github.damontecres.wholphin.data.model.SeriesTrackChoice
+import com.github.damontecres.wholphin.data.model.SeriesTrackChoiceType
 import com.github.damontecres.wholphin.data.model.TrackIndex
 import com.github.damontecres.wholphin.preferences.UserPreferences
+import com.github.damontecres.wholphin.services.StreamChoiceResult
 import com.github.damontecres.wholphin.services.StreamChoiceService
-import kotlinx.coroutines.Dispatchers
+import com.github.damontecres.wholphin.util.WholphinDispatchers
 import kotlinx.coroutines.withContext
 import org.jellyfin.sdk.model.api.MediaSourceInfo
 import org.jellyfin.sdk.model.api.MediaStream
@@ -19,65 +22,105 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
 
+/**
+ * Wrapper for [ItemPlaybackDao] to save [ItemPlayback] objects and also convert them into [ChosenStreams]
+ */
 @Singleton
 class ItemPlaybackRepository
     @Inject
     constructor(
         val serverRepository: ServerRepository,
         val itemPlaybackDao: ItemPlaybackDao,
-        private val playbackLanguageChoiceDao: PlaybackLanguageChoiceDao,
+        private val seriesTrackChoiceDao: SeriesTrackChoiceDao,
         private val streamChoiceService: StreamChoiceService,
     ) {
+        /**
+         * Get the chosen source & stream for the given item
+         *
+         * This will be either the explicit choice from the user ([ItemPlayback]) or the default choices
+         *
+         * @see getChosenItemFromPlayback
+         */
         suspend fun getSelectedTracks(
             itemId: UUID,
             item: BaseItem,
             prefs: UserPreferences,
         ): ChosenStreams? =
-            serverRepository.currentUser.value?.let { user ->
+            serverRepository.currentUser?.let { user ->
                 val itemPlayback = itemPlaybackDao.getItem(user = user, itemId = itemId)
-                val plc = streamChoiceService.getPlaybackLanguageChoice(item.data)
-                Timber.v("For ${item.id}:  itemPlayback=${itemPlayback != null}, plc=${plc != null}")
-                return getChosenItemFromPlayback(item, itemPlayback, plc, prefs)
+                return getChosenItemFromPlayback(item, itemPlayback, prefs)
             }
 
+        suspend fun getChosenItemFromPlayback(
+            item: BaseItem,
+            itemPlayback: ItemPlayback?,
+            prefs: UserPreferences,
+        ): ChosenStreams? {
+            val audioStc =
+                streamChoiceService.getSeriesTrackChoices(
+                    item.data,
+                    SeriesTrackChoiceType.AUDIO,
+                )
+            val subtitleStc =
+                streamChoiceService.getSeriesTrackChoices(
+                    item.data,
+                    SeriesTrackChoiceType.SUBTITLE,
+                )
+            return getChosenItemFromPlayback(item, itemPlayback, audioStc, subtitleStc, prefs)
+        }
+
+        /**
+         * Get the chosen source & stream for the given item
+         *
+         * This will be either the explicit choice from the provided [ItemPlayback] & [SeriesTrackChoice] or the default choices if they are null
+         */
         fun getChosenItemFromPlayback(
             item: BaseItem,
             itemPlayback: ItemPlayback?,
-            plc: PlaybackLanguageChoice?,
+            audioStc: List<SeriesTrackChoice>,
+            subtitleStc: List<SeriesTrackChoice>,
             prefs: UserPreferences,
         ): ChosenStreams? {
+            Timber.v(
+                "For %s: itemPlayback=%s, audioStc=%s, subtitleStc=%s",
+                item.id,
+                itemPlayback != null,
+                audioStc.isNotEmpty(),
+                subtitleStc.isNotEmpty(),
+            )
             val source =
                 item.data.mediaSources?.firstOrNull { it.id?.toUUIDOrNull() == itemPlayback?.sourceId }
                     ?: streamChoiceService.chooseSource(item.data.mediaSources.orEmpty())
             if (source != null) {
-                val audioStream =
+                val audioResult =
                     streamChoiceService.chooseAudioStream(
                         candidates =
                             source.mediaStreams
                                 ?.filter { it.type == MediaStreamType.AUDIO }
                                 .orEmpty(),
                         itemPlayback = itemPlayback,
-                        playbackLanguageChoice = plc,
+                        stc = audioStc,
                         prefs = prefs,
                     )
                 val subtitleStream =
                     streamChoiceService.chooseSubtitleStream(
-                        audioStreamLang = audioStream?.language,
+                        audioStreamLang = audioResult.stream?.language,
                         candidates =
                             source.mediaStreams
                                 ?.filter { it.type == MediaStreamType.SUBTITLE }
                                 .orEmpty(),
                         itemPlayback = itemPlayback,
-                        playbackLanguageChoice = plc,
+                        stc = subtitleStc,
                         prefs = prefs,
                     )
                 return ChosenStreams(
                     itemPlayback = itemPlayback,
-                    plc = plc,
+                    audioStc = audioStc,
+                    subtitleStc = subtitleStc,
                     itemId = item.id,
                     source = source,
                     videoStream = source.mediaStreams?.firstOrNull { it.type == MediaStreamType.VIDEO },
-                    audioStream = audioStream,
+                    audioStream = audioResult,
                     subtitleStream = subtitleStream,
                     subtitlesDisabled = itemPlayback?.subtitleIndex == TrackIndex.DISABLED,
                 )
@@ -86,12 +129,15 @@ class ItemPlaybackRepository
             }
         }
 
+        /**
+         * Save the choice for a specific media source for an item
+         */
         suspend fun savePlayVersion(
             itemId: UUID,
             sourceId: UUID,
         ): ItemPlayback? =
-            withContext(Dispatchers.IO) {
-                serverRepository.currentUser.value?.let { user ->
+            withContext(WholphinDispatchers.IO) {
+                serverRepository.currentUser?.let { user ->
                     val itemPlayback =
                         ItemPlayback(
                             userId = user.rowId,
@@ -103,6 +149,11 @@ class ItemPlaybackRepository
                 }
             }
 
+        /**
+         * Save the chosen track (index & type) for an item
+         *
+         * Additionally, if the item is part of a TV Series, store the language as the preferred one for this series
+         */
         suspend fun saveTrackSelection(
             item: BaseItem,
             itemPlayback: ItemPlayback?,
@@ -133,26 +184,36 @@ class ItemPlaybackRepository
                 Timber.v("Saving track selection %s", toSave)
                 toSave = saveItemPlayback(toSave)
                 val seriesId = item.data.seriesId
-                if (seriesId != null && (trackIndex >= 0 || trackIndex == TrackIndex.DISABLED)) {
+                if (seriesId != null || item.data.parentId != null) {
                     if (type == MediaStreamType.AUDIO) {
-                        val stream = source.mediaStreams?.first { it.index == trackIndex }
+                        val stream =
+                            RelativeMediaStream.from(trackIndex, source.mediaStreams.orEmpty())
                         if (stream?.language != null) {
-                            streamChoiceService.updateAudio(item.data, stream.language!!)
+                            streamChoiceService.saveSeriesTrackChoice(
+                                item.data,
+                                stream.type,
+                                stream,
+                            )
                         }
                     } else if (type == MediaStreamType.SUBTITLE) {
                         if (trackIndex == TrackIndex.DISABLED) {
-                            streamChoiceService.updateSubtitles(
+                            streamChoiceService.saveDisabledSeriesTrackChoice(
                                 item.data,
-                                subtitleLang = null,
-                                subtitlesDisabled = true,
+                                MediaStreamType.SUBTITLE,
+                            )
+                        } else if (trackIndex == TrackIndex.ONLY_FORCED) {
+                            streamChoiceService.saveOnlyForcedSeriesTrackChoice(
+                                item.data,
+                                MediaStreamType.SUBTITLE,
                             )
                         } else {
-                            val stream = source.mediaStreams?.firstOrNull { it.index == trackIndex }
+                            val stream =
+                                RelativeMediaStream.from(trackIndex, source.mediaStreams.orEmpty())
                             if (stream?.language != null) {
-                                streamChoiceService.updateSubtitles(
+                                streamChoiceService.saveSeriesTrackChoice(
                                     item.data,
-                                    stream.language!!,
-                                    subtitlesDisabled = false,
+                                    stream.type,
+                                    stream,
                                 )
                             }
                         }
@@ -168,7 +229,7 @@ class ItemPlaybackRepository
             val toSave =
                 if (itemPlayback.userId < 0) {
                     val userRowId =
-                        serverRepository.currentUser.value
+                        serverRepository.currentUser
                             ?.rowId
                             ?.takeIf { it >= 0 }
                             ?: throw IllegalStateException("Trying to save an ItemPlayback without a user, but there is no current user")
@@ -180,20 +241,26 @@ class ItemPlaybackRepository
             return toSave.copy(rowId = id)
         }
 
+        /**
+         * Wrapper for [ItemPlaybackDao.getTrackModifications] to get the [ItemTrackModification] for an item, if any
+         */
         suspend fun getTrackModifications(
             itemId: UUID,
             trackIndex: Int,
         ): ItemTrackModification? =
-            serverRepository.currentUser.value?.rowId?.let { userId ->
+            serverRepository.currentUser?.rowId?.let { userId ->
                 itemPlaybackDao.getTrackModifications(userId, itemId, trackIndex)
             }
 
+        /**
+         * Create and save a [ItemTrackModification] via [ItemPlaybackDao.saveItem]
+         */
         suspend fun saveTrackModifications(
             itemId: UUID,
             trackIndex: Int,
             delay: Duration,
         ) {
-            serverRepository.currentUser.value?.rowId?.let { userId ->
+            serverRepository.currentUser?.rowId?.let { userId ->
                 Timber.v("Saving track mod item=%s, track=%s, delay=%s", itemId, trackIndex, delay)
                 itemPlaybackDao.saveItem(
                     ItemTrackModification(
@@ -206,11 +273,15 @@ class ItemPlaybackRepository
             }
         }
 
+        /**
+         * Clear the user's source/stream choices for an item
+         */
         suspend fun deleteChosenStreams(chosenStreams: ChosenStreams?) {
             Timber.d("deleteChosenStreams: %s", chosenStreams)
-            chosenStreams?.plc?.let {
-                Timber.d("Deleting %s", it)
-                playbackLanguageChoiceDao.delete(it)
+            val stc = chosenStreams?.audioStc.orEmpty() + chosenStreams?.subtitleStc.orEmpty()
+            if (stc.isNotEmpty()) {
+                Timber.d("Deleting %s", stc)
+                seriesTrackChoiceDao.delete(stc)
             }
             chosenStreams?.itemPlayback?.let {
                 Timber.d("Deleting %s", it)
@@ -219,13 +290,17 @@ class ItemPlaybackRepository
         }
     }
 
+/**
+ * Info about which media source and streams the user/app has chosen for playback
+ */
 data class ChosenStreams(
     val itemPlayback: ItemPlayback?,
-    val plc: PlaybackLanguageChoice?,
+    val audioStc: List<SeriesTrackChoice>,
+    val subtitleStc: List<SeriesTrackChoice>,
     val itemId: UUID,
     val source: MediaSourceInfo,
     val videoStream: MediaStream?,
-    val audioStream: MediaStream?,
-    val subtitleStream: MediaStream?,
+    val audioStream: StreamChoiceResult,
+    val subtitleStream: StreamChoiceResult,
     val subtitlesDisabled: Boolean,
 )

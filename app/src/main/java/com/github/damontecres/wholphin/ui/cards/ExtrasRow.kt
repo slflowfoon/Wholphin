@@ -17,7 +17,7 @@ fun ExtrasRow(
     modifier: Modifier = Modifier,
 ) {
     ItemRow(
-        title = stringResource(R.string.extras),
+        title = stringResource(R.string.extras_title),
         items = extras,
         onClickItem = onClickItem,
         onLongClickItem = onLongClickItem,
@@ -38,7 +38,7 @@ fun ExtrasRow(
                 unplayedItemCount = -1,
                 playedPercentage = item?.playedPercentage ?: 0.0,
                 numberOfVersions = -1,
-                aspectRatio = AspectRatios.FOUR_THREE, // TODO
+                aspectRatio = item?.aspectRatio ?: AspectRatios.WIDE,
             )
         },
         modifier = modifier,

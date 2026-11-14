@@ -1,4 +1,6 @@
+import com.android.build.api.dsl.ApplicationExtension
 import com.android.build.api.dsl.ProductFlavor
+import com.android.build.api.variant.FilterConfiguration
 import com.google.protobuf.gradle.id
 import com.mikepenz.aboutlibraries.plugin.DuplicateMode
 import com.mikepenz.aboutlibraries.plugin.DuplicateRule
@@ -18,21 +20,51 @@ plugins {
     alias(libs.plugins.openapi.generator)
 }
 
-val isCI = if (System.getenv("CI") != null) System.getenv("CI").toBoolean() else false
-val shouldSign =
-    isCI &&
+val isCI = providers.environmentVariable("CI").orElse("false").map { it.toBoolean() }
+val hasAllSigningSecrets =
+    providers.provider {
         listOf(
             "KEY_ALIAS",
             "KEY_PASSWORD",
             "KEY_STORE_PASSWORD",
             "SIGNING_KEY",
-        ).all { System.getenv(it).isNullOrBlank().not() }
-val ffmpegModuleExists = project.file("libs/lib-decoder-ffmpeg-release.aar").exists()
-val av1ModuleExists = project.file("libs/lib-decoder-av1-release.aar").exists()
-val mpvModuleExists = project.file("libs/wholphin-mpv-release.aar").exists()
+        ).all {
+            providers
+                .environmentVariable(it)
+                .orNull
+                .isNullOrBlank()
+                .not()
+        }
+    }
+val shouldSign =
+    isCI.zip(hasAllSigningSecrets) { isCI, hasAllKeys ->
+        isCI && hasAllKeys
+    }
+val ffmpegModuleExists =
+    providers.provider { project.file("libs/lib-decoder-ffmpeg-release.aar").exists() }
+val av1ModuleExists =
+    providers.provider { project.file("libs/lib-decoder-av1-release.aar").exists() }
+val mpvModuleExists =
+    providers.provider { project.file("libs/wholphin-mpv-release.aar").exists() }
 val extensionsRepoActive =
-    project.findProperty("WholphinExtensionsUsername")?.toString().isNullOrBlank().not() &&
-        project.findProperty("WholphinExtensionsPassword")?.toString().isNullOrBlank().not()
+    providers.provider {
+        project
+            .findProperty("WholphinExtensionsUsername")
+            ?.toString()
+            .isNullOrBlank()
+            .not() &&
+            project
+                .findProperty("WholphinExtensionsPassword")
+                ?.toString()
+                .isNullOrBlank()
+                .not()
+    }
+
+// See https://issuetracker.google.com/issues/402800800
+val isBuildingBundle =
+    providers.provider {
+        gradle.startParameter.taskNames.any { it.lowercase().contains("bundle") }
+    }
 
 val gitTags =
     providers
@@ -45,18 +77,30 @@ val gitDescribe =
         .exec {
             commandLine("git", "describe", "--tags", "--long", "--match=v*")
             isIgnoreExitValue = true
-        }
-        .standardOutput.asText
+        }.standardOutput.asText
         .getOrElse("v0.0.0")
 
-android {
+kotlin {
+    compilerOptions {
+        languageVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_3
+        jvmTarget = JvmTarget.JVM_11
+        javaParameters = true
+
+        // Workaround for https://github.com/google/ksp/issues/2964
+        moduleName = "${project.group}_${project.name}"
+    }
+}
+
+private fun Provider<String>.getInt() = get().toInt()
+
+configure<ApplicationExtension> {
     namespace = "com.github.damontecres.wholphin"
-    compileSdk = 36
+    compileSdk = libs.versions.compileSdk.getInt()
 
     defaultConfig {
         applicationId = "com.github.damontecres.wholphin"
-        minSdk = 23
-        targetSdk = 36
+        minSdk = libs.versions.minSdk.getInt()
+        targetSdk = libs.versions.targetSdk.getInt()
         versionCode = gitTags.trim().lines().size
         versionName = gitDescribe.trim().removePrefix("v").ifBlank { "0.0.0" }
         testInstrumentationRunner = "com.github.damontecres.wholphin.test.WholphinTestRunner"
@@ -65,7 +109,7 @@ android {
     }
 
     signingConfigs {
-        if (shouldSign) {
+        if (shouldSign.get()) {
             create("ci") {
                 file("ci.keystore").writeBytes(
                     Base64.getDecoder().decode(System.getenv("SIGNING_KEY")),
@@ -84,13 +128,14 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
             isDebuggable = false
-            if (shouldSign) {
+            if (shouldSign.get()) {
                 signingConfig = signingConfigs.getByName("ci")
             } else {
                 val localPropertiesFile = project.rootProject.file("local.properties")
@@ -107,20 +152,9 @@ android {
 
         debug {
             isMinifyEnabled = false
+            isShrinkResources = false
             isDebuggable = true
             applicationIdSuffix = ".debug"
-        }
-
-        applicationVariants.all {
-            val variant = this
-            variant.outputs
-                .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
-                .forEach { output ->
-                    val abi = output.getFilter("ABI").let { if (it != null) "-$it" else "" }
-                    val outputFileName =
-                        "Wholphin-${variant.baseName}-${variant.versionName}-${variant.versionCode}$abi.apk"
-                    output.outputFileName = outputFileName
-                }
         }
     }
     flavorDimensions += "version"
@@ -160,26 +194,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
         isCoreLibraryDesugaringEnabled = true
     }
-    kotlin {
-        compilerOptions {
-            languageVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_3
-            jvmTarget = JvmTarget.JVM_11
-            javaParameters = true
-        }
-    }
+
     buildFeatures {
         buildConfig = true
         compose = true
     }
-    room {
-        schemaDirectory("$projectDir/schemas")
-    }
 
     splits {
         abi {
-            isEnable = true
+            // Disable split abis when building bundles
+            isEnable = !isBuildingBundle.get()
+
             reset()
-            include("armeabi-v7a", "arm64-v8a")
+            include("armeabi-v7a", "arm64-v8a", "x86_64")
             isUniversalApk = true
         }
     }
@@ -205,6 +232,29 @@ android {
     lint {
         disable.add("MissingTranslation")
     }
+    androidResources {
+        generateLocaleConfig = true
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs
+            .map { it as com.android.build.api.variant.impl.VariantOutputImpl }
+            .forEach { output ->
+                val abi =
+                    output
+                        .getFilter(FilterConfiguration.FilterType.ABI)
+                        .let { if (it != null) "-${it.identifier}" else "" }
+                val outputFileName =
+                    "Wholphin-${variant.flavorName}-${variant.buildType}-${output.versionName.get()}-${output.versionCode.get()}$abi.apk"
+                output.outputFileName = outputFileName
+            }
+    }
+}
+
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 protobuf {
@@ -271,11 +321,9 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.runtime)
-    implementation(libs.androidx.compose.runtime.livedata)
     implementation(libs.androidx.tv.foundation)
     implementation(libs.androidx.tv.material)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.datastore)
     implementation(libs.androidx.datastore.preferences)
@@ -283,6 +331,7 @@ dependencies {
     implementation(libs.androidx.tvprovider)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.hilt.work)
+    implementation(libs.androidx.profileinstaller)
 
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)
@@ -292,6 +341,7 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.ui.compose)
     implementation(libs.ass.media)
+    implementation(libs.exoplayerhdrutils)
 
     implementation(libs.coil.core)
     implementation(libs.coil.compose)
@@ -315,7 +365,6 @@ dependencies {
     implementation(libs.androidx.room.common.jvm)
     implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.lifecycle.viewmodel.navigation3)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.androidx.preference.ktx)
     implementation(libs.androidx.room.testing)
@@ -343,40 +392,39 @@ dependencies {
     implementation(libs.kache)
     implementation(libs.kache.file)
 
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
-    debugImplementation(libs.androidx.compose.ui.tooling)
-    debugImplementation(libs.androidx.compose.ui.test.manifest)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
-    if (ffmpegModuleExists) {
+    if (ffmpegModuleExists.get()) {
         logger.info("Using local ffmpeg decoder")
         implementation(files("libs/lib-decoder-ffmpeg-release.aar"))
-    } else if (extensionsRepoActive) {
+    } else if (extensionsRepoActive.get()) {
         logger.info("Using prebuilt ffmpeg decoder")
         implementation(libs.wholphin.extensions.ffmpeg)
     } else {
         logger.warn("Media3 ffmpeg decoder was NOT found")
     }
-    if (av1ModuleExists) {
+    if (av1ModuleExists.get()) {
         logger.info("Using local av1 decoder")
         implementation(files("libs/lib-decoder-av1-release.aar"))
-    } else if (extensionsRepoActive) {
+    } else if (extensionsRepoActive.get()) {
         logger.info("Using prebuilt av1 decoder")
         implementation(libs.wholphin.extensions.av1)
     } else {
         logger.warn("Media3 av1 decoder was NOT found")
     }
-    if (mpvModuleExists) {
+    if (mpvModuleExists.get()) {
         logger.info("Using local libMPV build")
         implementation(files("libs/wholphin-mpv-release.aar"))
-    } else if (extensionsRepoActive) {
+    } else if (extensionsRepoActive.get()) {
         logger.info("Using prebuilt libMPV")
         implementation(libs.wholphin.extensions.mpv)
     } else {
-        logger.warn("libMPV was NOT found")
+        logger.warn("libMPV was NOT found, using stub library")
+        implementation(project(":wholphin-mpv-stub"))
     }
 
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.mockk.android)
     testImplementation(libs.mockk.agent)
     testImplementation(libs.kotlinx.coroutines.test)
@@ -384,7 +432,8 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.hilt.android.testing)
     testImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.mockk.android)
     androidTestImplementation(libs.hilt.android.testing)
-    androidTestImplementation(libs.androidx.ui.test.manifest)
+    androidTestImplementation(libs.androidx.compose.ui.test.manifest)
 }

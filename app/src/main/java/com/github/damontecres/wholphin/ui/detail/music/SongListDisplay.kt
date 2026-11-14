@@ -3,6 +3,7 @@ package com.github.damontecres.wholphin.ui.detail.music
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -19,10 +20,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.tv.material3.DenseListItem
 import androidx.tv.material3.Icon
-import androidx.tv.material3.ListItem
 import androidx.tv.material3.ListItemDefaults
 import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.Text
@@ -31,6 +33,7 @@ import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.ui.PreviewTvSpec
 import com.github.damontecres.wholphin.ui.components.Button
 import com.github.damontecres.wholphin.ui.enableMarquee
+import com.github.damontecres.wholphin.ui.formatDuration
 import com.github.damontecres.wholphin.ui.letNotEmpty
 import com.github.damontecres.wholphin.ui.roundSeconds
 import com.github.damontecres.wholphin.ui.theme.WholphinTheme
@@ -51,7 +54,12 @@ fun SongListItem(
     isQueued: Boolean = false,
 ) = SongListItem(
     title = song?.title,
-    artist = if (showArtist) song?.data?.albumArtist else null,
+    artist =
+        if (showArtist) {
+            remember(song) { song?.data?.artists?.joinToString(", ") }
+        } else {
+            null
+        },
     indexNumber = song?.data?.indexNumber,
     runtime =
         remember(song) {
@@ -114,42 +122,31 @@ fun SongListItem(
         }
         val trailingContent = @Composable {
             Text(
-                text = runtime.toString(),
+                text = runtime?.let { LocalResources.current.formatDuration(it) } ?: "",
             )
         }
 
-        if (showArtist) {
-            // TODO use dense?
-            ListItem(
-                selected = isPlaying,
-                onClick = onClick,
-                onLongClick = onLongClick,
-                interactionSource = interactionSource,
-                leadingContent = leadingContent,
-                headlineContent = headlineContent,
-                supportingContent = {
-                    Text(
-                        text = artist ?: "",
-                    )
+        DenseListItem(
+            selected = isPlaying,
+            onClick = onClick,
+            onLongClick = onLongClick,
+            interactionSource = interactionSource,
+            leadingContent = leadingContent,
+            headlineContent = headlineContent,
+            supportingContent =
+                if (showArtist && artist != null) {
+                    {
+                        Text(
+                            text = artist,
+                        )
+                    }
+                } else {
+                    null
                 },
-                trailingContent = trailingContent,
-                scale = ListItemDefaults.scale(1f, 1f, .95f),
-                modifier = Modifier.weight(1f),
-            )
-        } else {
-            ListItem(
-                selected = isPlaying,
-                onClick = onClick,
-                onLongClick = onLongClick,
-                interactionSource = interactionSource,
-                leadingContent = leadingContent,
-                headlineContent = headlineContent,
-                supportingContent = null,
-                trailingContent = trailingContent,
-                scale = ListItemDefaults.scale(1f, 1f, .95f),
-                modifier = Modifier.weight(1f),
-            )
-        }
+            trailingContent = trailingContent,
+            scale = ListItemDefaults.scale(1f, 1f, .95f),
+            modifier = Modifier.weight(1f),
+        )
         if (showMoreButton) {
             Button(
                 onClick = onClickMore,
@@ -198,7 +195,7 @@ fun MusicQueueMarker(
 @Composable
 fun SongListItemPreview() {
     WholphinTheme {
-        Column {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SongListItem(
                 title = "Song title",
                 artist = "Artists",
@@ -224,6 +221,17 @@ fun SongListItemPreview() {
             SongListItem(
                 title = "Song title",
                 artist = "Artists",
+                indexNumber = 2,
+                runtime = 2.minutes + 30.seconds,
+                onClick = {},
+                onLongClick = { },
+                modifier = Modifier,
+                showArtist = true,
+                isPlaying = true,
+            )
+            SongListItem(
+                title = "Song title",
+                artist = null,
                 indexNumber = 2,
                 runtime = 2.minutes + 30.seconds,
                 onClick = {},

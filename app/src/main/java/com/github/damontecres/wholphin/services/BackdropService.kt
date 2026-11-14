@@ -18,8 +18,8 @@ import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.DiscoverItem
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.BackdropStyle
+import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,7 +55,7 @@ class BackdropService
          * Update the backdrop to use the specified item
          */
         suspend fun submit(item: BaseItem) =
-            withContext(Dispatchers.IO) {
+            withContext(WholphinDispatchers.IO) {
                 val imageUrl =
                     if (item.type == BaseItemKind.GENRE) {
                         item.imageUrlOverride
@@ -76,8 +76,8 @@ class BackdropService
         suspend fun submit(
             itemId: String,
             imageUrl: String?,
-        ) = withContext(Dispatchers.IO) {
-            if (backdropFlow.firstOrNull()?.imageUrl != imageUrl) {
+        ) = withContext(WholphinDispatchers.IO) {
+            if (backdropFlow.firstOrNull()?.imageUrl != imageUrl || imageUrl == null) {
                 _backdropFlow.update {
                     it.copy(
                         itemId = itemId,
@@ -110,7 +110,7 @@ class BackdropService
             val dynamicEnabled =
                 backdropStyle == BackdropStyle.BACKDROP_DYNAMIC_COLOR ||
                     backdropStyle == BackdropStyle.UNRECOGNIZED
-            val (primaryColor, secondaryColor, tertiaryColor) =
+            val colors =
                 if (dynamicEnabled) {
                     extractColorsFromBackdrop(imageUrl)
                 } else {
@@ -121,9 +121,9 @@ class BackdropService
                     BackdropResult(
                         itemId = itemId,
                         imageUrl = imageUrl,
-                        primaryColor = primaryColor,
-                        secondaryColor = secondaryColor,
-                        tertiaryColor = tertiaryColor,
+                        primaryColor = colors?.primary ?: it.primaryColor,
+                        secondaryColor = colors?.secondary ?: it.secondaryColor,
+                        tertiaryColor = colors?.tertiary ?: it.tertiaryColor,
                     )
                 } else {
                     it
@@ -131,10 +131,10 @@ class BackdropService
             }
         }
 
-        suspend fun extractColorsFromBackdrop(imageUrl: String?): ExtractedColors =
-            withContext(Dispatchers.IO) {
+        suspend fun extractColorsFromBackdrop(imageUrl: String?): ExtractedColors? =
+            withContext(WholphinDispatchers.IO) {
                 if (imageUrl.isNullOrBlank()) {
-                    return@withContext ExtractedColors.DEFAULT
+                    return@withContext null
                 }
                 extractedColorCache.get(imageUrl)?.let {
                     return@withContext it

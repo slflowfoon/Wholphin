@@ -33,14 +33,7 @@ val supportedCollectionTypes =
         CollectionType.MUSICVIDEOS,
         CollectionType.FOLDERS,
         CollectionType.MUSIC,
-        null, // Mixed
-    )
-
-val supportedHomeCollectionTypes =
-    setOf(
-        CollectionType.MOVIES,
-        CollectionType.TVSHOWS,
-        CollectionType.HOMEVIDEOS,
+        CollectionType.PHOTOS,
         null, // Mixed
     )
 
@@ -53,4 +46,16 @@ val supportedPlayableTypes =
         BaseItemKind.TV_CHANNEL,
         BaseItemKind.TV_PROGRAM,
         BaseItemKind.RECORDING,
+        BaseItemKind.SEASON,
+        BaseItemKind.SERIES,
+        BaseItemKind.BOX_SET,
+        BaseItemKind.PLAYLIST,
+    )
+
+val supportedShufflableTypes =
+    setOf(
+        BaseItemKind.SEASON,
+        BaseItemKind.SERIES,
+        BaseItemKind.BOX_SET,
+        BaseItemKind.PLAYLIST,
     )

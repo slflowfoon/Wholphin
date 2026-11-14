@@ -42,7 +42,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.ChosenStreams
@@ -57,15 +56,19 @@ import com.github.damontecres.wholphin.ui.cards.PersonRow
 import com.github.damontecres.wholphin.ui.components.ErrorMessage
 import com.github.damontecres.wholphin.ui.components.HeaderUtils
 import com.github.damontecres.wholphin.ui.components.LoadingPage
+import com.github.damontecres.wholphin.ui.components.TabDetails
 import com.github.damontecres.wholphin.ui.components.TabRow
 import com.github.damontecres.wholphin.ui.components.TitleOrLogo
+import com.github.damontecres.wholphin.ui.formatSeasonNumber
 import com.github.damontecres.wholphin.ui.ifElse
 import com.github.damontecres.wholphin.ui.logTab
 import com.github.damontecres.wholphin.ui.playback.isPlayKeyUp
 import com.github.damontecres.wholphin.ui.rememberInt
 import com.github.damontecres.wholphin.ui.tryRequestFocus
+import com.github.damontecres.wholphin.ui.util.StringStringProvider
 import com.github.damontecres.wholphin.ui.util.rememberDelayedNestedScroll
 import kotlinx.coroutines.launch
+import org.jellyfin.sdk.model.api.MediaSourceInfo
 import org.jellyfin.sdk.model.api.PersonKind
 import kotlin.time.Duration
 
@@ -97,6 +100,7 @@ fun SeriesOverviewContent(
     canDelete: (BaseItem) -> Boolean,
     onConfirmDelete: (BaseItem) -> Unit,
     onClickExtra: (Int, ExtrasItem) -> Unit,
+    onChooseVersion: (BaseItem, MediaSourceInfo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -117,14 +121,21 @@ fun SeriesOverviewContent(
     val scrollConnection = rememberDelayedNestedScroll()
     var requestFocusAfterSeason by remember { mutableStateOf(false) }
 
-    val seasonStr = stringResource(R.string.tv_season)
+    val tabFocusRequesters = remember(seasons) { List(seasons.size) { FocusRequester() } }
+    val contentFocusRequesters = remember(seasons) { List(seasons.size) { FocusRequester() } }
     val tabs =
-        seasons.map { season ->
-            season?.name
-                ?: season?.data?.indexNumber?.let { "$seasonStr $it" }
-                ?: ""
+        seasons.mapIndexed { index, season ->
+            TabDetails(
+                title =
+                    StringStringProvider(
+                        season?.name
+                            ?: season?.data?.indexNumber?.let { formatSeasonNumber(it) }
+                            ?: "",
+                    ),
+                tabFocusRequester = tabFocusRequesters[index],
+                contentFocusRequester = contentFocusRequesters[index],
+            )
         }
-    val focusRequesters = remember(seasons) { List(seasons.size) { FocusRequester() } }
 
     val currentOnChangeSeason by rememberUpdatedState(onChangeSeason)
 
@@ -170,7 +181,6 @@ fun SeriesOverviewContent(
                                 requestFocusAfterSeason = true
                             }
                         },
-                    focusRequesters = focusRequesters,
                     modifier =
                         Modifier
                             .focusRequester(tabRowFocusRequester)
@@ -224,7 +234,7 @@ fun SeriesOverviewContent(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             modifier =
                                 Modifier
-                                    .focusRestorer(firstItemFocusRequester)
+                                    .focusRestorer(episodeRowFocusRequester)
 //                                    .focusRequester(episodeRowFocusRequester)
                                     .onFocusChanged {
                                         cardRowHasFocus = it.hasFocus
@@ -323,6 +333,7 @@ fun SeriesOverviewContent(
                         },
                         canDelete = canDelete.invoke(ep),
                         onConfirmDelete = { onConfirmDelete.invoke(ep) },
+                        onChooseVersion = { onChooseVersion.invoke(ep, it) },
                         modifier =
                             Modifier
                                 .padding(top = 4.dp)

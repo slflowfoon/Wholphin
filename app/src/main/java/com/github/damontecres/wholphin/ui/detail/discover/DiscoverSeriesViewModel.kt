@@ -1,9 +1,9 @@
 package com.github.damontecres.wholphin.ui.detail.discover
 
 import android.content.Context
-import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.damontecres.wholphin.api.seerr.model.MediaInfo
 import com.github.damontecres.wholphin.api.seerr.model.RelatedVideo
 import com.github.damontecres.wholphin.api.seerr.model.RequestPostRequest
 import com.github.damontecres.wholphin.api.seerr.model.RequestRequestIdPutRequest
@@ -12,35 +12,42 @@ import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.DiscoverItem
 import com.github.damontecres.wholphin.data.model.DiscoverRating
 import com.github.damontecres.wholphin.data.model.RemoteTrailer
+import com.github.damontecres.wholphin.data.model.RequestStatus
 import com.github.damontecres.wholphin.data.model.SeerrAvailability
+import com.github.damontecres.wholphin.data.model.SeerrItemType
 import com.github.damontecres.wholphin.data.model.Trailer
 import com.github.damontecres.wholphin.services.BackdropService
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.SeerrServerRepository
 import com.github.damontecres.wholphin.services.SeerrService
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
+import com.github.damontecres.wholphin.ui.launchDefault
 import com.github.damontecres.wholphin.ui.launchIO
 import com.github.damontecres.wholphin.ui.nav.Destination
-import com.github.damontecres.wholphin.ui.setValueOnMain
-import com.github.damontecres.wholphin.util.LoadingExceptionHandler
+import com.github.damontecres.wholphin.ui.showToast
+import com.github.damontecres.wholphin.util.DataLoadingState
 import com.github.damontecres.wholphin.util.LoadingState
+import com.github.damontecres.wholphin.util.WholphinDispatchers
+import com.github.damontecres.wholphin.util.successValue
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.jellyfin.sdk.api.client.ApiClient
+import org.jellyfin.sdk.model.api.BaseItemKind
 import timber.log.Timber
 
 @HiltViewModel(assistedFactory = DiscoverSeriesViewModel.Factory::class)
@@ -61,198 +68,396 @@ class DiscoverSeriesViewModel
             fun create(item: DiscoverItem): DiscoverSeriesViewModel
         }
 
-        val loading = MutableLiveData<LoadingState>(LoadingState.Pending)
-        val tvSeries = MutableLiveData<TvDetails?>(null)
-        val rating = MutableLiveData<DiscoverRating?>(null)
-
-        val seasons = MutableLiveData<List<RequestSeason>>(listOf())
-        val trailers = MutableLiveData<List<Trailer>>(listOf())
-        val people = MutableLiveData<List<DiscoverItem>>(listOf())
-        val similar = MutableLiveData<List<DiscoverItem>>()
-        val recommended = MutableLiveData<List<DiscoverItem>>()
-        val canCancelRequest = MutableStateFlow(false)
+        private val _state = MutableStateFlow(DiscoverSeriesState())
+        val state: StateFlow<DiscoverSeriesState> = _state
 
         val userConfig = seerrServerRepository.current.map { it?.config }
-        val request4kEnabled = seerrServerRepository.current.map { it?.request4kTvEnabled ?: false }
+        val requestEnabled =
+            seerrServerRepository.current
+                .map { it?.requestTvEnabled ?: false }
+                .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+        val request4kEnabled =
+            seerrServerRepository.current
+                .map { it?.request4kTvEnabled ?: false }
+                .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
         init {
             init()
         }
 
-        private fun fetchAndSetItem(): Deferred<TvDetails> =
-            viewModelScope.async(
-                Dispatchers.IO +
-                    LoadingExceptionHandler(
-                        loading,
-                        "Error fetching movie",
-                    ),
-            ) {
-                val tv = seerrService.api.tvApi.tvTvIdGet(tvId = item.id)
-                this@DiscoverSeriesViewModel.tvSeries.setValueOnMain(tv)
-                tv
+        private fun fetchAndSetItem(): Deferred<TvDetails?> =
+            viewModelScope.async(WholphinDispatchers.IO) {
+                try {
+                    val tv = seerrService.api.tvApi.tvTvIdGet(tvId = item.id)
+                    _state.update { it.copy(tvSeries = DataLoadingState.Success(tv)) }
+                    tv
+                } catch (ex: CancellationException) {
+                    throw ex
+                } catch (ex: Exception) {
+                    Timber.e(ex, "Error updating tv details")
+                    null
+                }
             }
 
         fun init(): Job =
-            viewModelScope.launch(
-                Dispatchers.IO +
-                    LoadingExceptionHandler(
-                        loading,
-                        "Error fetching movie",
-                    ),
-            ) {
+            viewModelScope.launchIO {
                 Timber.v("Init for tv %s", item.id)
-                val tv = fetchAndSetItem().await()
-                val discoveredItem = seerrService.createDiscoverItem(tv)
-                backdropService.submit(discoveredItem)
+                try {
+                    val tv = seerrService.api.tvApi.tvTvIdGet(tvId = item.id)
+                    _state.update { it.copy(tvSeries = DataLoadingState.Success(tv)) }
+                    val discoveredItem = seerrService.createDiscoverItem(tv)
+                    backdropService.submit(discoveredItem)
 
-                updateSeasonStatus()
-                updateCanCancel()
+                    updateSeasonStatus(tv)
+                    updateAvailability()
 
-                withContext(Dispatchers.Main) {
-                    loading.value = LoadingState.Success
-                }
-                viewModelScope.launchIO {
-                    val result = seerrService.api.tvApi.tvTvIdRatingsGet(tvId = item.id)
-                    rating.setValueOnMain(DiscoverRating(result))
-                }
-                if (!similar.isInitialized) {
                     viewModelScope.launchIO {
-                        val result =
-                            seerrService.api.tvApi
-                                .tvTvIdSimilarGet(tvId = item.id, page = 1)
-                                .results
-                                ?.map { seerrService.createDiscoverItem(it) }
-                                .orEmpty()
-                        similar.setValueOnMain(result)
+                        val rating =
+                            getDiscoverRating(item.id) {
+                                DiscoverRating(seerrService.api.tvApi.tvTvIdRatingsGet(tvId = item.id))
+                            }
+                        _state.update { it.copy(rating = rating) }
                     }
-                    viewModelScope.launchIO {
-                        val result =
-                            seerrService.api.tvApi
-                                .tvTvIdRecommendationsGet(tvId = item.id, page = 1)
-                                .results
-                                ?.map { seerrService.createDiscoverItem(it) }
-                                .orEmpty()
-                        recommended.setValueOnMain(result)
+                    if (state.value.similar.isEmpty()) {
+                        viewModelScope.launchIO {
+                            val result =
+                                seerrService.api.tvApi
+                                    .tvTvIdSimilarGet(tvId = item.id, page = 1)
+                                    .results
+                                    ?.map { seerrService.createDiscoverItem(it) }
+                                    .orEmpty()
+                            _state.update { it.copy(similar = result) }
+                        }
+                        viewModelScope.launchIO {
+                            val result =
+                                seerrService.api.tvApi
+                                    .tvTvIdRecommendationsGet(tvId = item.id, page = 1)
+                                    .results
+                                    ?.map { seerrService.createDiscoverItem(it) }
+                                    .orEmpty()
+                            _state.update { it.copy(recommended = result) }
+                        }
                     }
-                }
-                val people =
-                    tv.credits
-                        ?.cast
-                        ?.map { seerrService.createDiscoverItem(it) }
-                        .orEmpty() +
+                    val people =
                         tv.credits
-                            ?.crew
+                            ?.cast
                             ?.map { seerrService.createDiscoverItem(it) }
-                            .orEmpty()
-                this@DiscoverSeriesViewModel.people.setValueOnMain(people)
+                            .orEmpty() +
+                            tv.credits
+                                ?.crew
+                                ?.map { seerrService.createDiscoverItem(it) }
+                                .orEmpty()
+                    _state.update { it.copy(people = people) }
 
-                val trailers =
-                    tv.relatedVideos
-                        ?.filter { it.type == RelatedVideo.Type.TRAILER }
-                        ?.filter { it.name.isNotNullOrBlank() && it.url.isNotNullOrBlank() }
-                        ?.map {
-                            RemoteTrailer(it.name!!, it.url!!, it.site)
-                        }.orEmpty()
-                this@DiscoverSeriesViewModel.trailers.setValueOnMain(trailers)
+                    val trailers =
+                        tv.relatedVideos
+                            ?.filter { it.type == RelatedVideo.Type.TRAILER }
+                            ?.filter { it.name.isNotNullOrBlank() && it.url.isNotNullOrBlank() }
+                            ?.map {
+                                RemoteTrailer(it.name!!, it.url!!, it.site)
+                            }.orEmpty()
+                    _state.update { it.copy(trailers = trailers) }
+                } catch (ex: CancellationException) {
+                    throw ex
+                } catch (ex: Exception) {
+                    Timber.e(ex, "Error getting tv details")
+                    _state.update { it.copy(tvSeries = DataLoadingState.Error(ex)) }
+                }
             }
 
         fun navigateTo(destination: Destination) {
             navigationManager.navigateTo(destination)
         }
 
-        private suspend fun updateSeasonStatus() {
-            tvSeries.value?.let { tv ->
-                val seasonStatus = mutableMapOf<Int, SeerrAvailability>()
-                tv.seasons?.forEach {
-                    it.seasonNumber?.let {
-                        seasonStatus[it] = SeerrAvailability.UNKNOWN
-                    }
-                }
-                val tvStatus =
-                    SeerrAvailability.from(tv.mediaInfo?.status) ?: SeerrAvailability.UNKNOWN
-                tv.mediaInfo
-                    ?.requests
-                    ?.forEach {
-                        it.seasons?.mapNotNull { season ->
-                            season.seasonNumber?.let {
-                                val current = seasonStatus[season.seasonNumber]
-                                val new =
-                                    SeerrAvailability
-                                        .from(season.status)
-                                        ?.takeIf { it != SeerrAvailability.UNKNOWN } ?: tvStatus
-                                if (current == null || new.status > current.status) {
-                                    seasonStatus[season.seasonNumber] = new
-                                }
-                            }
-                        }
-                    }
-                Timber.v("seasonStatus=%s", seasonStatus)
-                val requestSeasons =
-                    seasonStatus.mapNotNull { (seasonNumber, availability) ->
-                        tv.seasons?.firstOrNull { it.seasonNumber == seasonNumber }?.let {
-                            RequestSeason(it, availability)
-                        }
-                    }
-                seasons.setValueOnMain(requestSeasons)
+        fun goTo(
+            mediaInfo: MediaInfo?,
+            type: BaseItemKind,
+        ) {
+            viewModelScope.launchDefault {
+                goToButtonDiscover(mediaInfo, type, context, navigationManager)
             }
         }
 
-        private suspend fun updateCanCancel() {
-            val user = userConfig.firstOrNull()
-            val canCancel = canUserCancelRequest(user, tvSeries.value?.mediaInfo?.requests)
-            canCancelRequest.update { canCancel }
+        private suspend fun updateSeasonStatus(tv: TvDetails) {
+            if (request4kEnabled.first()) {
+                updateSeasonStatus(tv, true)
+            }
+            updateSeasonStatus(tv, false)
         }
 
-        fun request(
-            id: Int,
-            seasons: Set<Int>,
+        private suspend fun updateSeasonStatus(
+            tv: TvDetails,
             is4k: Boolean,
         ) {
-            viewModelScope.launchIO {
-                tvSeries.value?.let { tv ->
-                    val currentRequest =
-                        tv.mediaInfo?.requests?.firstOrNull {
-                            it.requestedBy?.id ==
-                                seerrServerRepository.currentUserId.first()
+            Timber.v("updateSeasonStatus: id=%s, is4k=%s", tv.id, is4k)
+            val currentUserId = seerrServerRepository.currentUserId.first()
+            val seasonStatus = mutableMapOf<Int, RequestStatus>()
+            val seasonAvailability = mutableMapOf<Int, SeerrAvailability>()
+            val editable = mutableMapOf<Int, Boolean>()
+            tv.seasons?.forEach {
+                it.seasonNumber?.let { seasonNumber ->
+                    seasonStatus[seasonNumber] = RequestStatus.UNKNOWN
+                    val status = if (is4k) it.status4k else it.status
+                    val availability =
+                        SeerrAvailability.from(status) ?: SeerrAvailability.UNKNOWN
+                    seasonAvailability[seasonNumber] = availability
+                }
+            }
+            tv.mediaInfo?.seasons?.forEach {
+                it.seasonNumber?.let { seasonNumber ->
+                    val status = if (is4k) it.status4k else it.status
+                    val availability =
+                        SeerrAvailability.from(status) ?: SeerrAvailability.UNKNOWN
+                    val current =
+                        seasonAvailability.getOrDefault(seasonNumber, SeerrAvailability.UNKNOWN)
+                    if (availability > current) {
+                        seasonAvailability[seasonNumber] = availability
+                    }
+                }
+            }
+
+            tv.mediaInfo
+                ?.requests
+                ?.filter { it.is4k == is4k }
+                ?.forEach { req ->
+                    req.seasons?.mapNotNull { season ->
+                        season.seasonNumber?.let {
+                            val current = seasonStatus[season.seasonNumber]
+                            // Not status4k because the request itself is marked as is4k or not
+                            val status = season.status
+                            val new = RequestStatus.from(status)
+                            if (current == null || new.status > current.status) {
+                                seasonStatus[season.seasonNumber] = new
+                            }
+                            editable[season.seasonNumber] =
+                                currentUserId == req.requestedBy?.id && (
+                                    req.status == RequestStatus.PENDING.status ||
+                                        req.status == RequestStatus.DECLINED.status
+                                )
                         }
-                    if (currentRequest != null) {
-                        Timber.v("User has pending request, will update")
-                        seerrService.api.requestApi.requestRequestIdPut(
-                            requestId = currentRequest.id.toString(),
-                            requestRequestIdPutRequest =
-                                RequestRequestIdPutRequest(
-                                    is4k = is4k,
-                                    mediaType = RequestRequestIdPutRequest.MediaType.TV,
-                                    seasons = seasons.toList(),
-                                ),
-                        )
-                    } else {
-                        Timber.v("New request for %s seasons", seasons.size)
-                        seerrService.api.requestApi.requestPost(
-                            RequestPostRequest(
-                                is4k = is4k,
-                                mediaId = id,
-                                mediaType = RequestPostRequest.MediaType.TV,
-                                seasons = seasons.toList(),
-                            ),
+                    }
+                }
+            Timber.v("seasonAvailability=%s", seasonAvailability)
+            Timber.v("seasonStatus=%s", seasonStatus)
+            val requestSeasons =
+                seasonStatus.mapNotNull { (seasonNumber, status) ->
+                    tv.seasons?.firstOrNull { it.seasonNumber == seasonNumber }?.let {
+                        val availability =
+                            when (status) {
+                                RequestStatus.PENDING -> {
+                                    SeerrAvailability.PENDING
+                                }
+
+                                RequestStatus.APPROVED -> {
+                                    SeerrAvailability.PROCESSING
+                                }
+
+                                RequestStatus.DECLINED -> {
+                                    SeerrAvailability.UNKNOWN
+                                }
+
+                                RequestStatus.FAILURE -> {
+                                    SeerrAvailability.UNKNOWN
+                                }
+
+                                RequestStatus.UNKNOWN,
+                                RequestStatus.COMPLETED,
+                                -> {
+                                    seasonAvailability.getOrDefault(
+                                        seasonNumber,
+                                        SeerrAvailability.UNKNOWN,
+                                    )
+                                }
+                            }
+                        val defaultEditable =
+                            availability != SeerrAvailability.AVAILABLE &&
+                                availability != SeerrAvailability.PARTIALLY_AVAILABLE &&
+                                availability != SeerrAvailability.PROCESSING &&
+                                availability != SeerrAvailability.BLOCKLISTED
+                        RequestSeason(
+                            season = it,
+                            status = status,
+                            availability = availability,
+                            editable = editable.getOrDefault(seasonNumber, defaultEditable),
                         )
                     }
+                }
+            Timber.v("Got %s seasons, is4k=%s", requestSeasons.size, is4k)
+//            requestSeasons.forEach {
+//                Timber.v(
+//                    "is4k=%s, season %s: availability=%s, status=%s, editable=%s",
+//                    is4k,
+//                    it.season.seasonNumber,
+//                    it.availability,
+//                    it.status,
+//                    it.editable,
+//                )
+//            }
+            _state.update {
+                if (is4k) {
+                    it.copy(seasons4k = requestSeasons)
+                } else {
+                    it.copy(seasons = requestSeasons)
+                }
+            }
+        }
 
-                    fetchAndSetItem().await()
-                    updateSeasonStatus()
-                    updateCanCancel()
+        private suspend fun updateAvailability() {
+            val user = userConfig.firstOrNull()
+            val canCancel =
+                canUserCancelRequest(
+                    user,
+                    state.value.tvSeries.successValue
+                        ?.mediaInfo
+                        ?.requests,
+                )
+            val status =
+                state.value.tvSeries.successValue?.let { tv ->
+                    val overallStatus = SeerrAvailability.from(tv.mediaInfo?.status)
+                    if (overallStatus == SeerrAvailability.UNKNOWN) {
+                        val userRequests =
+                            tv.mediaInfo
+                                ?.requests
+                                ?.filter { it.requestedBy?.id == user?.id }
+                                .orEmpty()
+                        if (userRequests.any { RequestStatus.from(it.status) == RequestStatus.PENDING }) {
+                            SeerrAvailability.PENDING
+                        } else if (userRequests.any { RequestStatus.from(it.status) == RequestStatus.APPROVED }) {
+                            SeerrAvailability.PROCESSING
+                        } else {
+                            SeerrAvailability.UNKNOWN
+                        }
+                    } else {
+                        overallStatus
+                    }
+                }
+            _state.update {
+                it.copy(
+                    canCancelRequest = canCancel,
+                    availability = status ?: SeerrAvailability.UNKNOWN,
+                )
+            }
+        }
+
+        fun requestOnClick() {
+            viewModelScope.launchIO {
+                try {
+                    val data = seerrService.getProfilesAndFolders(SeerrItemType.TV)
+                    _state.update {
+                        it.copy(
+                            profileLoading = LoadingState.Success,
+                            requestData = data,
+                        )
+                    }
+                } catch (ex: Exception) {
+                    Timber.e(ex, "Error getting profiles & folders")
+                    showToast(context, "Error getting profiles & folders: ${ex.localizedMessage}")
+                    _state.update {
+                        it.copy(
+                            profileLoading = LoadingState.Success,
+                        )
+                    }
+                }
+            }
+        }
+
+        fun request(request: TvRequest) {
+            viewModelScope.launchIO {
+                state.value.tvSeries.successValue?.let { tv ->
+                    val currentUserId = seerrServerRepository.currentUserId.first()
+                    val currentRequest =
+                        tv.mediaInfo?.requests?.firstOrNull {
+                            it.status == RequestStatus.PENDING.status &&
+                                it.requestedBy?.id == currentUserId
+                        }
+                    try {
+                        if (currentRequest != null) {
+                            Timber.v("User has pending request, will update")
+                            seerrService.api.requestApi.requestRequestIdPut(
+                                requestId = currentRequest.id.toString(),
+                                requestRequestIdPutRequest =
+                                    RequestRequestIdPutRequest(
+                                        is4k = request.is4k,
+                                        mediaType = RequestRequestIdPutRequest.MediaType.TV,
+                                        seasons = request.seasons,
+                                        serverId =
+                                            when {
+                                                request.profileId == null && request.folder == null -> null
+                                                request.is4k -> request.data.server4kId
+                                                else -> request.data.serverId
+                                            },
+                                        profileId = request.profileId,
+                                        rootFolder = request.folder,
+                                    ),
+                            )
+                        } else {
+                            Timber.v("New request for %s seasons", request.seasons.size)
+                            seerrService.api.requestApi.requestPost(
+                                RequestPostRequest(
+                                    is4k = request.is4k,
+                                    mediaId = request.tvId,
+                                    mediaType = RequestPostRequest.MediaType.TV,
+                                    seasons = request.seasons,
+                                    serverId =
+                                        when {
+                                            request.profileId == null && request.folder == null -> null
+                                            request.is4k -> request.data.server4kId
+                                            else -> request.data.serverId
+                                        },
+                                    profileId = request.profileId,
+                                    rootFolder = request.folder,
+                                    tags = emptyList(),
+                                ),
+                            )
+                        }
+                    } catch (ex: CancellationException) {
+                        throw ex
+                    } catch (ex: Exception) {
+                        Timber.e(ex, "Error requesting %s", request.tvId)
+                        showToast(context, "An error occurred")
+                    }
+
+                    fetchAndSetItem().await()?.let {
+                        updateSeasonStatus(it)
+                        updateAvailability()
+                    }
                 }
             }
         }
 
         fun cancelRequest(id: Int) {
             viewModelScope.launchIO {
-                tvSeries.value?.mediaInfo?.requests?.firstOrNull()?.let {
+                state.value.tvSeries.successValue?.mediaInfo?.requests?.firstOrNull()?.let {
                     // TODO handle multiple requests? Or just delete self's request?
-                    seerrService.api.requestApi.requestRequestIdDelete(it.id.toString())
-                    fetchAndSetItem().await()
-                    updateCanCancel()
+                    try {
+                        seerrService.api.requestApi.requestRequestIdDelete(it.id.toString())
+                    } catch (ex: CancellationException) {
+                        throw ex
+                    } catch (ex: Exception) {
+                        Timber.e(ex, "Error requesting %s", id)
+                        showToast(context, "An error occurred")
+                    }
+
+                    fetchAndSetItem().await()?.let {
+                        updateSeasonStatus(it)
+                        updateAvailability()
+                    }
                 }
             }
         }
     }
+
+data class DiscoverSeriesState(
+    val tvSeries: DataLoadingState<TvDetails> = DataLoadingState.Pending,
+    val rating: DiscoverRating? = null,
+    val seasons: List<RequestSeason> = emptyList(),
+    val seasons4k: List<RequestSeason> = emptyList(),
+    val trailers: List<Trailer> = emptyList(),
+    val people: List<DiscoverItem> = emptyList(),
+    val similar: List<DiscoverItem> = emptyList(),
+    val recommended: List<DiscoverItem> = emptyList(),
+    val canCancelRequest: Boolean = false,
+    val profileLoading: LoadingState = LoadingState.Pending,
+    val requestData: SeerrRequestData = SeerrRequestData(),
+    val availability: SeerrAvailability = SeerrAvailability.UNKNOWN,
+)

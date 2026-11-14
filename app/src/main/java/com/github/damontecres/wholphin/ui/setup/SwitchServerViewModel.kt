@@ -1,38 +1,39 @@
 package com.github.damontecres.wholphin.ui.setup
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
-import androidx.lifecycle.MutableLiveData
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.damontecres.wholphin.R
+import com.github.damontecres.wholphin.WholphinApplication
 import com.github.damontecres.wholphin.data.JellyfinServerDao
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.JellyfinServer
 import com.github.damontecres.wholphin.services.SetupDestination
 import com.github.damontecres.wholphin.services.SetupNavigationManager
-import com.github.damontecres.wholphin.services.hilt.DefaultDispatcher
-import com.github.damontecres.wholphin.services.hilt.IoDispatcher
 import com.github.damontecres.wholphin.ui.launchIO
-import com.github.damontecres.wholphin.ui.setValueOnMain
 import com.github.damontecres.wholphin.ui.showToast
 import com.github.damontecres.wholphin.util.LoadingState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import org.jellyfin.sdk.Jellyfin
 import org.jellyfin.sdk.api.client.HttpClientOptions
-import org.jellyfin.sdk.api.client.extensions.quickConnectApi
+import org.jellyfin.sdk.api.client.exception.TimeoutException
 import org.jellyfin.sdk.api.client.extensions.systemApi
 import org.jellyfin.sdk.discovery.RecommendedServerInfoScore
 import org.jellyfin.sdk.discovery.RecommendedServerIssue
+import org.jellyfin.sdk.model.ServerVersion
 import org.jellyfin.sdk.model.serializer.toUUID
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import timber.log.Timber
-import java.util.UUID
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.seconds
 
@@ -45,52 +46,86 @@ class SwitchServerViewModel
         val serverRepository: ServerRepository,
         val serverDao: JellyfinServerDao,
         val navigationManager: SetupNavigationManager,
-        @param:IoDispatcher private val ioDispatcher: CoroutineDispatcher,
-        @param:DefaultDispatcher private val defaultDispatcher: CoroutineDispatcher,
     ) : ViewModel() {
-        val servers = MutableLiveData<List<JellyfinServer>>(listOf())
-        val serverStatus = MutableLiveData<Map<UUID, ServerConnectionStatus>>(mapOf())
-        val serverQuickConnect = MutableLiveData<Map<UUID, Boolean>>(mapOf())
+        private val _state = MutableStateFlow(SwitchServerState())
+        val state: StateFlow<SwitchServerState> = _state
 
-        val discoveredServers = MutableLiveData<List<JellyfinServer>>(listOf())
-
-        val addServerState = MutableLiveData<LoadingState>(LoadingState.Pending)
+        val hasPermission: Boolean
+            get() =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_LOCAL_NETWORK,
+                    ) == PackageManager.PERMISSION_GRANTED
+                } else {
+                    true
+                }
 
         fun clearAddServerState() {
-            addServerState.value = LoadingState.Pending
+            _state.update { it.copy(addServerState = LoadingState.Pending) }
         }
 
         fun init() {
             viewModelScope.launchIO {
-                withContext(Dispatchers.Main) {
-                    serverStatus.value = mapOf()
-                    serverQuickConnect.value = mapOf()
-                }
+                _state.update { SwitchServerState() }
 
                 val allServers =
                     serverDao
                         .getServers()
                         .map { it.server }
                         .sortedWith(compareBy<JellyfinServer> { it.name }.thenBy { it.url })
-                withContext(Dispatchers.Main) {
-                    servers.value = allServers
+                        .map { ServerState(it) }
+                _state.update {
+                    it.copy(
+                        loading = LoadingState.Success,
+                        servers = allServers,
+                    )
                 }
                 allServers.forEach { server ->
-                    internalTestServer(server)
+                    internalTestServer(server.server)
                 }
             }
         }
 
-        fun testServer(server: JellyfinServer) {
-            serverStatus.value =
-                serverStatus.value!!.toMutableMap().apply {
-                    put(
-                        server.id,
-                        ServerConnectionStatus.Pending,
-                    )
+        private fun updateServerState(
+            server: JellyfinServer,
+            result: ServerConnectionStatus,
+        ) {
+            val supported =
+                if (result is ServerConnectionStatus.Success) {
+                    val serverVersion =
+                        result.systemInfo.version?.let { ServerVersion.fromString(it) }
+                    if (serverVersion == null || serverVersion < WholphinApplication.minimumServerVersion) {
+                        ServerVersionSupported.NOT_SUPPORTED
+                    } else if (serverVersion < WholphinApplication.newMinimumServerVersion) {
+                        ServerVersionSupported.NOT_SUPPORTED_IN_FUTURE
+                    } else {
+                        ServerVersionSupported.SUPPORTED
+                    }
+                } else {
+                    ServerVersionSupported.UNKNOWN
                 }
+            _state.update {
+                val servers =
+                    it.servers.toMutableList().apply {
+                        val index = indexOfFirst { it.server.id == server.id }
+                        set(
+                            index,
+                            get(index).copy(
+                                server = server,
+                                status = result,
+                                versionSupported = supported,
+                            ),
+                        )
+                    }
+                it.copy(servers = servers)
+            }
+        }
+
+        fun testServer(server: JellyfinServer) {
+            updateServerState(server, ServerConnectionStatus.Pending)
             viewModelScope.launchIO {
-                delay(1000)
+                delay(500)
                 val result = internalTestServer(server)
                 if (result is ServerConnectionStatus.Success) {
                     showToast(context, context.getString(R.string.success), Toast.LENGTH_SHORT)
@@ -100,58 +135,42 @@ class SwitchServerViewModel
             }
         }
 
-        private suspend fun internalTestServer(server: JellyfinServer): ServerConnectionStatus =
-            try {
-                val systemInfo =
-                    jellyfin
-                        .createApi(
-                            server.url,
-                            httpClientOptions =
-                                HttpClientOptions(
-                                    requestTimeout = 6.seconds,
-                                    connectTimeout = 6.seconds,
-                                    socketTimeout = 6.seconds,
-                                ),
-                        ).systemApi
-                        .getPublicSystemInfo()
-                        .content
-                val result = ServerConnectionStatus.Success(systemInfo)
-                withContext(Dispatchers.Main) {
-                    serverStatus.value =
-                        serverStatus.value!!.toMutableMap().apply {
-                            put(
-                                server.id,
-                                result,
-                            )
-                        }
+        private suspend fun internalTestServer(server: JellyfinServer): ServerConnectionStatus {
+            val result =
+                try {
+                    val systemInfo =
+                        jellyfin
+                            .createApi(
+                                server.url,
+                                httpClientOptions =
+                                    HttpClientOptions(
+                                        requestTimeout = 6.seconds,
+                                        connectTimeout = 6.seconds,
+                                        socketTimeout = 6.seconds,
+                                    ),
+                            ).systemApi
+                            .getPublicSystemInfo()
+                            .content
+                    ServerConnectionStatus.Success(systemInfo)
+                } catch (ex: TimeoutException) {
+                    Timber.w(ex, "timeout checking server ${server.url}")
+                    val cause = ex.cause
+                    if (cause is java.net.ConnectException) {
+                        ServerConnectionStatus.Error("${cause.localizedMessage}")
+                    } else {
+                        ServerConnectionStatus.Error(ex.localizedMessage)
+                    }
+                } catch (ex: Exception) {
+                    Timber.w(ex, "Error checking server ${server.url}")
+                    ServerConnectionStatus.Error(ex.localizedMessage)
                 }
-                result
-            } catch (ex: Exception) {
-                val status = ServerConnectionStatus.Error(ex.localizedMessage)
-                Timber.w(ex, "Error checking server ${server.url}")
-                withContext(Dispatchers.Main) {
-                    serverStatus.value =
-                        serverStatus.value!!.toMutableMap().apply {
-                            put(
-                                server.id,
-                                status,
-                            )
-                        }
-                }
-                status
-            }
+            updateServerState(server, result)
+            return result
+        }
 
         fun switchServer(server: JellyfinServer) {
             viewModelScope.launchIO {
-                withContext(Dispatchers.Main) {
-                    serverStatus.value =
-                        serverStatus.value!!.toMutableMap().apply {
-                            put(
-                                server.id,
-                                ServerConnectionStatus.Pending,
-                            )
-                        }
-                }
+                updateServerState(server, ServerConnectionStatus.Pending)
                 val result = internalTestServer(server)
                 if (result is ServerConnectionStatus.Success) {
                     val updatedServer =
@@ -160,17 +179,18 @@ class SwitchServerViewModel
                             version = result.systemInfo.version,
                         )
                     serverRepository.addAndChangeServer(updatedServer)
-                    withContext(Dispatchers.Main) {
-                        navigationManager.navigateTo(SetupDestination.UserList(updatedServer))
-                    }
+                    navigationManager.navigateTo(SetupDestination.UserList(updatedServer))
                 } else if (result is ServerConnectionStatus.Error) {
-                    showToast(context, "Error connecting: $${result.message}")
+                    showToast(context, "Error connecting: ${result.message}")
                 }
             }
         }
 
-        fun addServer(inputUrl: String) {
-            addServerState.value = LoadingState.Loading
+        fun addServer(
+            inputUrl: String,
+            showToast: Boolean,
+        ) {
+            _state.update { it.copy(addServerState = LoadingState.Loading) }
             viewModelScope.launchIO {
                 try {
                     val scores =
@@ -192,27 +212,12 @@ class SwitchServerViewModel
                                     version = serverInfo.version,
                                 )
                             serverRepository.addAndChangeServer(server)
-                            val quickConnect =
-                                jellyfin
-                                    .createApi(serverUrl)
-                                    .quickConnectApi
-                                    .getQuickConnectEnabled()
-                                    .content
-                            withContext(Dispatchers.Main) {
-                                serverQuickConnect.value =
-                                    serverQuickConnect.value!!.toMutableMap().apply {
-                                        put(id, quickConnect)
-                                    }
-                            }
-                            withContext(Dispatchers.Main) {
-                                addServerState.value = LoadingState.Success
-                                navigationManager.navigateTo(SetupDestination.UserList(server))
-                            }
+                            _state.update { it.copy(addServerState = LoadingState.Success) }
+                            navigationManager.navigateTo(SetupDestination.UserList(server))
                         } else {
-                            withContext(Dispatchers.Main) {
-                                addServerState.value =
-                                    LoadingState.Error("Server returned invalid response")
-                            }
+                            val msg = "Server returned invalid response"
+                            _state.update { it.copy(addServerState = LoadingState.Error(msg)) }
+                            if (showToast) showToast(context, msg)
                         }
                     } else {
                         Timber.w("Error connecting with %s: %s", inputUrl, scores)
@@ -240,14 +245,13 @@ class SwitchServerViewModel
                                 "${it.address} - $issues"
                             }
                         val message = "Error, tried addresses:\n$errors"
-                        addServerState.setValueOnMain(LoadingState.Error(message))
+                        _state.update { it.copy(addServerState = LoadingState.Error(message)) }
+                        if (showToast) showToast(context, message)
                     }
                 } catch (ex: Exception) {
                     Timber.w(ex, "Error creating API for $inputUrl")
-                    withContext(Dispatchers.Main) {
-                        addServerState.value =
-                            LoadingState.Error(exception = ex)
-                    }
+                    _state.update { it.copy(addServerState = LoadingState.Error(exception = ex)) }
+                    if (showToast) showToast(context, "Error: ${ex.localizedMessage}")
                 }
             }
         }
@@ -262,23 +266,48 @@ class SwitchServerViewModel
         fun discoverServers() {
             viewModelScope.launchIO {
                 jellyfin.discovery.discoverLocalServers().collect { server ->
-                    val newServerList =
-                        discoveredServers.value!!
-                            .toMutableList()
-                            .apply {
-                                add(
-                                    JellyfinServer(
-                                        server.id.toUUID(),
-                                        server.name,
-                                        server.address,
-                                        null,
-                                    ),
-                                )
-                            }
-                    withContext(Dispatchers.Main) {
-                        discoveredServers.value = newServerList
+                    val jellyfinServer =
+                        JellyfinServer(
+                            server.id.toUUID(),
+                            server.name,
+                            server.address,
+                            null,
+                        )
+                    _state.update {
+                        it.copy(
+                            discoveredServers =
+                                it.discoveredServers
+                                    .toMutableList()
+                                    .apply {
+                                        add(jellyfinServer)
+                                    }.distinctBy {
+                                        // Filter out duplicates within the discovered servers list (same URL appearing multiple times)
+                                        it.url.lowercase().trim()
+                                    },
+                        )
                     }
                 }
             }
         }
     }
+
+data class SwitchServerState(
+    val loading: LoadingState = LoadingState.Pending,
+    val servers: List<ServerState> = emptyList(),
+    val discoveredServers: List<JellyfinServer> = emptyList(),
+    val addServerState: LoadingState = LoadingState.Pending,
+)
+
+data class ServerState(
+    val server: JellyfinServer,
+    val status: ServerConnectionStatus = ServerConnectionStatus.Pending,
+    val quickConnect: Boolean = false,
+    val versionSupported: ServerVersionSupported = ServerVersionSupported.UNKNOWN,
+)
+
+enum class ServerVersionSupported {
+    SUPPORTED,
+    NOT_SUPPORTED,
+    UNKNOWN,
+    NOT_SUPPORTED_IN_FUTURE,
+}

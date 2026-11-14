@@ -20,7 +20,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,21 +44,24 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.github.damontecres.wholphin.R
+import com.github.damontecres.wholphin.data.ExtrasItem
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.services.BackdropService
+import com.github.damontecres.wholphin.services.ExtrasService
 import com.github.damontecres.wholphin.services.FavoriteWatchManager
 import com.github.damontecres.wholphin.services.ImageUrlService
 import com.github.damontecres.wholphin.services.MediaManagementService
-import com.github.damontecres.wholphin.services.MediaReportService
 import com.github.damontecres.wholphin.services.MusicService
 import com.github.damontecres.wholphin.services.NavigationManager
+import com.github.damontecres.wholphin.services.ServerReportService
 import com.github.damontecres.wholphin.services.UserPreferencesService
 import com.github.damontecres.wholphin.ui.AspectRatios
-import com.github.damontecres.wholphin.ui.DefaultItemFields
+import com.github.damontecres.wholphin.ui.ItemRowFields
 import com.github.damontecres.wholphin.ui.SlimItemFields
 import com.github.damontecres.wholphin.ui.cards.BannerCardWithTitle
+import com.github.damontecres.wholphin.ui.cards.ExtrasRow
 import com.github.damontecres.wholphin.ui.cards.ItemRow
 import com.github.damontecres.wholphin.ui.components.ContextMenu
 import com.github.damontecres.wholphin.ui.components.ContextMenuDialog
@@ -73,7 +75,6 @@ import com.github.damontecres.wholphin.ui.components.QuickDetails
 import com.github.damontecres.wholphin.ui.data.AddPlaylistViewModel
 import com.github.damontecres.wholphin.ui.data.RowColumn
 import com.github.damontecres.wholphin.ui.detail.PlaylistDialog
-import com.github.damontecres.wholphin.ui.detail.PlaylistLoadingState
 import com.github.damontecres.wholphin.ui.ifElse
 import com.github.damontecres.wholphin.ui.launchDefault
 import com.github.damontecres.wholphin.ui.launchIO
@@ -85,15 +86,16 @@ import com.github.damontecres.wholphin.util.ApiRequestPager
 import com.github.damontecres.wholphin.util.ExceptionHandler
 import com.github.damontecres.wholphin.util.GetItemsRequestHandler
 import com.github.damontecres.wholphin.util.LoadingState
+import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.jellyfin.sdk.api.client.ApiClient
@@ -102,7 +104,6 @@ import org.jellyfin.sdk.api.client.extensions.libraryApi
 import org.jellyfin.sdk.api.client.extensions.userLibraryApi
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
-import org.jellyfin.sdk.model.api.MediaType
 import org.jellyfin.sdk.model.api.request.GetItemsRequest
 import org.jellyfin.sdk.model.api.request.GetSimilarItemsRequest
 import java.util.UUID
@@ -117,16 +118,21 @@ class AlbumViewModel
         navigationManager: NavigationManager,
         mediaManagementService: MediaManagementService,
         val serverRepository: ServerRepository,
-        val mediaReportService: MediaReportService,
+        val serverReportService: ServerReportService,
         private val favoriteWatchManager: FavoriteWatchManager,
         private val userPreferencesService: UserPreferencesService,
         private val backdropService: BackdropService,
         private val imageUrlService: ImageUrlService,
-        @Assisted itemId: UUID,
+        private val extrasService: ExtrasService,
+        @Assisted("itemId") itemId: UUID,
+        @Assisted("initialSongId") private val initialSongId: UUID?,
     ) : MusicViewModel(itemId, context, api, musicService, navigationManager, mediaManagementService) {
         @AssistedFactory
         interface Factory {
-            fun create(itemId: UUID): AlbumViewModel
+            fun create(
+                @Assisted("itemId") itemId: UUID,
+                @Assisted("initialSongId") initialSongId: UUID?,
+            ): AlbumViewModel
         }
 
         private val _state = MutableStateFlow(AlbumState.EMPTY)
@@ -136,6 +142,11 @@ class AlbumViewModel
 
         init {
             init()
+            viewModelScope.launchDefault {
+                mediaManagementService.collectCanDelete(state.map { it.album }) { canDelete ->
+                    _state.update { it.copy(canDelete = canDelete) }
+                }
+            }
         }
 
         override fun init() {
@@ -151,6 +162,10 @@ class AlbumViewModel
                     val songsDeferred = async { getPagerForAlbum(api, itemId) }
                     val album = itemDeferred.await()
                     val songs = songsDeferred.await()
+                    val initialSongIndex =
+                        initialSongId?.let { id ->
+                            songs.indexOfBlocking { it?.id == id }.takeIf { it >= 0 }
+                        }
                     val imageUrl = imageUrlService.getItemImageUrl(album, ImageType.PRIMARY)
                     val allArtists =
                         album.data.artists.orEmpty() +
@@ -168,6 +183,7 @@ class AlbumViewModel
                             isVariousArtists = isVariousArtists,
                             imageUrl = imageUrl,
                             songs = songs,
+                            initialSongIndex = initialSongIndex,
                             loading = LoadingState.Success,
                         )
                     }
@@ -178,7 +194,7 @@ class AlbumViewModel
                                 api.libraryApi
                                     .getSimilarItems(
                                         GetSimilarItemsRequest(
-                                            userId = serverRepository.currentUser.value?.id,
+                                            userId = serverRepository.currentUser?.id,
                                             itemId = itemId,
                                             excludeArtistIds = album.data.albumArtists?.map { it.id },
                                             fields = SlimItemFields,
@@ -192,10 +208,10 @@ class AlbumViewModel
                     viewModelScope.launchIO {
                         val request =
                             GetItemsRequest(
-                                userId = serverRepository.currentUser.value?.id,
+                                userId = serverRepository.currentUser?.id,
                                 albumIds = listOf(itemId),
                                 parentId = null,
-                                fields = DefaultItemFields,
+                                fields = ItemRowFields,
                                 recursive = true,
                                 includeItemTypes = listOf(BaseItemKind.MUSIC_VIDEO),
                             )
@@ -204,6 +220,14 @@ class AlbumViewModel
                         if (musicVideos.isNotEmpty()) {
                             _state.update {
                                 it.copy(musicVideos = musicVideos)
+                            }
+                        }
+                    }
+                    viewModelScope.launchIO {
+                        val extras = extrasService.getExtras(itemId)
+                        if (extras.isNotEmpty()) {
+                            _state.update {
+                                it.copy(extras = extras)
                             }
                         }
                     }
@@ -226,7 +250,7 @@ class AlbumViewModel
         fun setFavorite(
             itemId: UUID,
             favorite: Boolean,
-        ) = viewModelScope.launch(ExceptionHandler() + Dispatchers.IO) {
+        ) = viewModelScope.launch(ExceptionHandler() + WholphinDispatchers.IO) {
             favoriteWatchManager.setFavorite(itemId, favorite)
             val album =
                 api.userLibraryApi
@@ -274,7 +298,10 @@ data class AlbumState(
     val songs: List<BaseItem?>,
     val similar: List<BaseItem>,
     val loading: LoadingState,
+    val initialSongIndex: Int? = null,
     val musicVideos: List<BaseItem?> = emptyList(),
+    val extras: List<ExtrasItem> = emptyList(),
+    val canDelete: Boolean = false,
 ) {
     companion object {
         val EMPTY = AlbumState(null, false, null, emptyList(), emptyList(), LoadingState.Pending)
@@ -284,16 +311,18 @@ data class AlbumState(
 private const val HEADER_ROW = 0
 private const val SONG_ROW = HEADER_ROW + 1
 private const val MUSIC_VIDEO_ROW = SONG_ROW + 1
-private const val SIMILAR_ROW = MUSIC_VIDEO_ROW + 1
+private const val EXTRAS_ROW = SONG_ROW + 1
+private const val SIMILAR_ROW = EXTRAS_ROW + 1
 
 @Composable
 fun AlbumDetailsPage(
     itemId: UUID,
     preferences: UserPreferences,
     modifier: Modifier = Modifier,
+    initialSongId: UUID? = null,
     viewModel: AlbumViewModel =
         hiltViewModel<AlbumViewModel, AlbumViewModel.Factory>(
-            creationCallback = { it.create(itemId) },
+            creationCallback = { it.create(itemId, initialSongId) },
         ),
     playlistViewModel: AddPlaylistViewModel = hiltViewModel(),
 ) {
@@ -302,12 +331,11 @@ fun AlbumDetailsPage(
     val state by viewModel.state.collectAsState()
     val currentMusic by viewModel.currentMusic.collectAsState()
 
-    var position by rememberPosition(0, 0)
     val focusRequesters =
         remember { List(SIMILAR_ROW + 1) { FocusRequester() } }
     val focusManager = LocalFocusManager.current
     var showPlaylistDialog by remember { mutableStateOf<Optional<UUID>>(Optional.absent()) }
-    val playlistState by playlistViewModel.playlistState.observeAsState(PlaylistLoadingState.Pending)
+    val playlistState by playlistViewModel.playlistState.collectAsState()
     var showContextMenu by remember { mutableStateOf<ContextMenu?>(null) }
     val moreDialogActions =
         remember {
@@ -318,7 +346,7 @@ fun AlbumDetailsPage(
                 onClickAddToQueue = { item -> viewModel.addToQueue(item, -1) },
                 onClickFavorite = { itemId, favorite -> viewModel.setFavorite(itemId, favorite) },
                 onClickAddPlaylist = { itemId ->
-                    playlistViewModel.loadPlaylists(MediaType.AUDIO)
+                    playlistViewModel.loadPlaylists()
                     showPlaylistDialog.makePresent(itemId)
                 },
                 onClickRemoveFromQueue = { _, _ -> },
@@ -338,12 +366,20 @@ fun AlbumDetailsPage(
 
         LoadingState.Success -> {
             val album = state.album!!
+            val itemsBefore = 2
+            val initialSongIndex = state.initialSongIndex
+            var position by rememberPosition(
+                row = if (initialSongIndex != null) SONG_ROW else 0,
+                column = initialSongIndex ?: 0,
+            )
 
             val firstFocusRequester = remember { FocusRequester() }
             val firstBringIntoViewRequester = remember { BringIntoViewRequester() }
             val bringIntoViewRequester = remember { BringIntoViewRequester() }
-            val listState = rememberLazyListState()
-            val itemsBefore = 2
+            val listState =
+                rememberLazyListState(
+                    initialFirstVisibleItemIndex = initialSongIndex?.let { itemsBefore + it } ?: 0,
+                )
 
             val songFocusRequester = remember { FocusRequester() }
             LaunchedEffect(Unit) {
@@ -389,6 +425,7 @@ fun AlbumDetailsPage(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             MusicExpandableButtons(
+                                title = album.title ?: "",
                                 actions =
                                     remember {
                                         MusicButtonActions(
@@ -415,9 +452,13 @@ fun AlbumDetailsPage(
                                                         actions = moreDialogActions,
                                                     )
                                             },
+                                            onConfirmDelete = {
+                                                viewModel.deleteItem(album)
+                                            },
                                         )
                                     },
                                 favorite = album.favorite,
+                                canDelete = state.canDelete,
                                 buttonOnFocusChanged = {
                                     if (it.isFocused) {
                                         position = RowColumn(HEADER_ROW, 0)
@@ -522,7 +563,7 @@ fun AlbumDetailsPage(
                                         item = item,
                                         onClick = onClick,
                                         onLongClick = onLongClick,
-                                        aspectRatio = AspectRatios.WIDE,
+                                        aspectRatio = item?.aspectRatio ?: AspectRatios.WIDE,
                                         played = item?.played ?: false,
                                         playPercent = item?.data?.userData?.playedPercentage ?: 0.0,
                                         favorite = item?.favorite ?: false,
@@ -530,6 +571,19 @@ fun AlbumDetailsPage(
                                     )
                                 },
                                 modifier = Modifier.focusRequester(focusRequesters[MUSIC_VIDEO_ROW]),
+                            )
+                        }
+                    }
+                    if (state.extras.isNotEmpty()) {
+                        item {
+                            ExtrasRow(
+                                extras = state.extras,
+                                onClickItem = { index, extra ->
+                                    position = RowColumn(EXTRAS_ROW, index)
+                                    viewModel.navigationManager.navigateTo(extra.destination)
+                                },
+                                onLongClickItem = { _, _ -> },
+                                modifier = Modifier.focusRequester(focusRequesters[EXTRAS_ROW]),
                             )
                         }
                     }
@@ -555,6 +609,7 @@ fun AlbumDetailsPage(
                                                 ),
                                             canRemoveFromQueue = false,
                                             actions = moreDialogActions,
+                                            showGoTo = true,
                                         )
                                 },
                                 cardContent = { index: Int, item: BaseItem?, mod: Modifier, onClick: () -> Unit, onLongClick: () -> Unit ->
@@ -598,6 +653,7 @@ fun AlbumDetailsPage(
                 playlistViewModel.createPlaylistAndAddItem(it, itemId)
                 showPlaylistDialog.makeAbsent()
             },
+            onSearch = playlistViewModel::loadPlaylists,
             elevation = 3.dp,
         )
     }

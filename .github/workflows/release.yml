@@ -11,7 +11,7 @@ defaults:
 
 env:
   APK_SHORT_NAME: Wholphin.apk
-  GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx8g -XX:MaxMetaspaceSize=512m'"
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx12g -XX:MaxMetaspaceSize=1024m'"
   TAG_NAME: ${{ github.ref_name }}
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout the code
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # Need the tags to build
       - name: Setup
@@ -72,8 +72,9 @@ jobs:
           ORG_GRADLE_PROJECT_WholphinExtensionsUsername: "${{ secrets.EXTENSIONS_USERNAME }}"
           ORG_GRADLE_PROJECT_WholphinExtensionsPassword: "${{ secrets.EXTENSIONS_PASSWORD }}"
         run: |
-          ./gradlew clean assembleDefaultRelease bundleAppstoreRelease bundleFiretvRelease --no-daemon
-
+          ./gradlew clean bundleAppstoreRelease
+          ./gradlew bundleFiretvRelease
+          ./gradlew assembleDefaultRelease
       - name: Verify signatures
         run: |
           echo "Verify APK signatures"
@@ -94,19 +95,26 @@ jobs:
           echo "SHA256 checksums:"
           find app/build/outputs \( -name '*.apk' -or -name '*.aab' \) -print0 | xargs -0 sha256sum
       - name: Upload AAB
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: AAB
           path: |
             app/build/outputs/bundle/**/*.aab
           compression-level: 0
       - name: Upload APKs
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: APKs
           path: |
             app/build/outputs/apk/**/*.apk
           compression-level: 0
+      - name: Upload mapping files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mapping
+          path: |
+            app/build/outputs/**/mapping.txt
+          compression-level: 6
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

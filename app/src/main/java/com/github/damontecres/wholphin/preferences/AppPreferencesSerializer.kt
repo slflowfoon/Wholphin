@@ -55,6 +55,7 @@ class AppPreferencesSerializer
                                     AppPreference.RefreshRateSwitching.defaultValue
                                 resolutionSwitching = AppPreference.ResolutionSwitching.defaultValue
                                 cinemaMode = AppPreference.CinemaMode.defaultValue
+                                dpadSeekMode = AppPreference.DpadSeekModePref.defaultValue
 
                                 overrides =
                                     PlaybackOverrides
@@ -66,7 +67,8 @@ class AppPreferencesSerializer
                                             directPlayPgs = AppPreference.DirectPlayPgs.defaultValue
                                             mediaExtensionsEnabled =
                                                 AppPreference.FfmpegPreference.defaultValue
-                                            assPlaybackMode = AppPreference.AssSubtitleMode.defaultValue
+                                            assPlaybackMode =
+                                                AppPreference.AssSubtitleMode.defaultValue
                                         }.build()
 
                                 mpvOptions =
@@ -84,7 +86,6 @@ class AppPreferencesSerializer
                             .apply {
                                 maxItemsPerRow = AppPreference.HomePageItems.defaultValue.toInt()
                                 enableRewatchingNextUp = AppPreference.RewatchNextUp.defaultValue
-                                combineContinueNext = AppPreference.CombineContinueNext.defaultValue
                                 maxDaysNextUp = AppPreference.MaxDaysNextUp.defaultValue.toInt()
                             }.build()
                     interfacePreferences =
@@ -98,6 +99,16 @@ class AppPreferencesSerializer
                                 showClock = AppPreference.ShowClock.defaultValue
                                 backdropStyle = AppPreference.BackdropStylePref.defaultValue
                                 showLogos = AppPreference.ShowLogos.defaultValue
+                                clearDisplayToggles()
+                                addAllDisplayToggles(AppPreference.DisplayTogglesPref.defaultValue)
+
+                                searchPreferences =
+                                    SearchPreferences
+                                        .newBuilder()
+                                        .apply {
+                                            combinedSearchResults = false
+                                            showVoiceSearchButton = true
+                                        }.build()
 
                                 subtitlesPreferences =
                                     SubtitlePreferences
@@ -164,6 +175,20 @@ class AppPreferencesSerializer
                                 showLyrics = true
                                 showAlbumArt = true
                             }.build()
+
+                    experimentalPreferences =
+                        ExperimentalPreferences
+                            .newBuilder()
+                            .apply {
+                                enabled = false
+                                videoTunnelingEnabled = false
+                                preferAc3Surround = ExperimentalPreference.PreferAc3ForSurround.defaultValue
+                                disableAudioOffload = ExperimentalPreference.DisableAudioOffload.defaultValue
+                                preferDolbyVisionOverHdr10Plus =
+                                    ExperimentalPreference.PreferDolbyVisionOverHdr10Plus.defaultValue
+                                convertDolbyVisionProfile7 =
+                                    ExperimentalPreference.ConvertDolbyVisionProfile7.defaultValue
+                            }.build()
                 }.build()
 
         override suspend fun readFrom(input: InputStream): AppPreferences {
@@ -207,6 +232,11 @@ inline fun AppPreferences.updateInterfacePreferences(block: InterfacePreferences
         interfacePreferences = interfacePreferences.toBuilder().apply(block).build()
     }
 
+inline fun AppPreferences.updateSearchPreferences(block: SearchPreferences.Builder.() -> Unit): AppPreferences =
+    updateInterfacePreferences {
+        searchPreferences = searchPreferences.toBuilder().apply(block).build()
+    }
+
 inline fun AppPreferences.updateSubtitlePreferences(block: SubtitlePreferences.Builder.() -> Unit): AppPreferences =
     updateInterfacePreferences {
         subtitlesPreferences = subtitlesPreferences.toBuilder().apply(block).build()
@@ -235,6 +265,11 @@ inline fun AppPreferences.updateScreensaverPreferences(block: ScreensaverPrefere
 inline fun AppPreferences.updateMusicPreferences(block: MusicPreferences.Builder.() -> Unit): AppPreferences =
     update {
         musicPreferences = musicPreferences.toBuilder().apply(block).build()
+    }
+
+inline fun AppPreferences.updateExperimentalPreferences(block: ExperimentalPreferences.Builder.() -> Unit): AppPreferences =
+    update {
+        experimentalPreferences = experimentalPreferences.toBuilder().apply(block).build()
     }
 
 fun SubtitlePreferences.Builder.resetSubtitles() {

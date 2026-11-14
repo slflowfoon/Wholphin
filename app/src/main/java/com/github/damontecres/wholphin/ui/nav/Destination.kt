@@ -2,19 +2,23 @@
 
 package com.github.damontecres.wholphin.ui.nav
 
-import androidx.annotation.StringRes
 import androidx.navigation3.runtime.NavKey
+import com.github.damontecres.wholphin.data.filter.DiscoverFilter
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.CollectionFolderFilter
 import com.github.damontecres.wholphin.data.model.DiscoverItem
 import com.github.damontecres.wholphin.data.model.GetItemsFilter
-import com.github.damontecres.wholphin.data.model.ItemPlayback
+import com.github.damontecres.wholphin.data.model.HomeRowConfig
 import com.github.damontecres.wholphin.preferences.PlayerBackend
+import com.github.damontecres.wholphin.ui.components.ViewOptions
 import com.github.damontecres.wholphin.ui.data.SortAndDirection
 import com.github.damontecres.wholphin.ui.detail.series.SeasonEpisodeIds
 import com.github.damontecres.wholphin.ui.preferences.PreferenceScreenOption
+import com.github.damontecres.wholphin.ui.util.StringProvider
 import com.github.damontecres.wholphin.util.DiscoverRequestType
+import com.github.damontecres.wholphin.util.RequestHandler
 import com.github.damontecres.wholphin.util.SEERR_PAGE_SIZE
+import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.UseSerializers
 import org.jellyfin.sdk.model.api.BaseItemKind
@@ -50,7 +54,11 @@ sealed class Destination(
     ) : Destination(true)
 
     @Serializable
-    data object Search : Destination()
+    data class Search(
+        val query: String = "",
+    ) : Destination()
+
+    data object UserAppPreferences : Destination(true)
 
     @Serializable
     data class SeriesOverview(
@@ -66,6 +74,7 @@ sealed class Destination(
         val itemId: UUID,
         val type: BaseItemKind,
         val collectionType: CollectionType? = null,
+        val initialSongId: UUID? = null,
     ) : Destination() {
         constructor(item: BaseItem) : this(item.id, item.type, item.data.collectionType)
     }
@@ -79,9 +88,9 @@ sealed class Destination(
     data class Playback(
         val itemId: UUID,
         val positionMs: Long,
-        val itemPlayback: ItemPlayback? = null,
         val forceTranscoding: Boolean = false,
         val backend: PlayerBackend? = null,
+        val shuffle: Boolean = false,
     ) : Destination(true) {
         constructor(item: BaseItem) : this(item.id, item.resumeMs)
     }
@@ -104,18 +113,28 @@ sealed class Destination(
         val parentType: BaseItemKind,
         val filter: CollectionFolderFilter,
         val recursive: Boolean,
+        val collectionType: CollectionType,
     ) : Destination(false)
 
     @Serializable
-    data class ItemGrid(
-        val title: String?,
-        @param:StringRes val titleRes: Int?,
-        val itemIds: List<UUID>,
+    data class ItemGrid<T>(
+        val title: StringProvider,
+        @Contextual val request: T,
+        val requestHandler: RequestHandler<T>,
+        val initialPosition: Int = 0,
+        val viewOptions: ViewOptions = ViewOptions(),
+    ) : Destination(false)
+
+    @Serializable
+    data class MoreHomeRow(
+        val title: StringProvider,
+        val config: HomeRowConfig,
+        val initialPosition: Int,
     ) : Destination(false)
 
     @Serializable
     data class Slideshow(
-        val parentId: UUID,
+        val parentId: UUID?,
         val index: Int,
         val filter: CollectionFolderFilter,
         val sortAndDirection: SortAndDirection,
@@ -132,11 +151,16 @@ sealed class Destination(
     @Serializable
     data class DiscoveredItem(
         val item: DiscoverItem,
+        // Index to scroll to on the person page grid
+        val startIndex: Int = 0,
     ) : Destination(false)
 
+    @Serializable
     data class DiscoverMoreResult(
         val type: DiscoverRequestType,
         val startIndex: Int = SEERR_PAGE_SIZE,
+        val initialFilter: DiscoverFilter = DiscoverFilter(),
+        val titleOverride: StringProvider? = null,
     ) : Destination(false)
 
     @Serializable

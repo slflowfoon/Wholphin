@@ -18,7 +18,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,11 +28,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -46,11 +46,11 @@ import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.services.FavoriteWatchManager
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.SeerrService
+import com.github.damontecres.wholphin.ui.AspectRatios
 import com.github.damontecres.wholphin.ui.Cards
+import com.github.damontecres.wholphin.ui.ItemRowFields
 import com.github.damontecres.wholphin.ui.LocalImageUrlService
-import com.github.damontecres.wholphin.ui.OneTimeLaunchedEffect
 import com.github.damontecres.wholphin.ui.PreviewTvSpec
-import com.github.damontecres.wholphin.ui.SlimItemFields
 import com.github.damontecres.wholphin.ui.cards.SeasonCard
 import com.github.damontecres.wholphin.ui.components.ErrorMessage
 import com.github.damontecres.wholphin.ui.components.ExpandableFaButton
@@ -68,20 +68,23 @@ import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import com.github.damontecres.wholphin.ui.launchIO
 import com.github.damontecres.wholphin.ui.nav.Destination
 import com.github.damontecres.wholphin.ui.rememberPosition
-import com.github.damontecres.wholphin.ui.setValueOnMain
 import com.github.damontecres.wholphin.ui.theme.WholphinTheme
 import com.github.damontecres.wholphin.ui.tryRequestFocus
+import com.github.damontecres.wholphin.ui.util.ResStringProvider
 import com.github.damontecres.wholphin.util.ApiRequestPager
 import com.github.damontecres.wholphin.util.DataLoadingState
 import com.github.damontecres.wholphin.util.DiscoverRequestType
 import com.github.damontecres.wholphin.util.GetItemsRequestHandler
-import com.github.damontecres.wholphin.util.LoadingExceptionHandler
-import com.github.damontecres.wholphin.util.LoadingState
 import com.github.damontecres.wholphin.util.RowLoadingState
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedFactory
+import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import org.jellyfin.sdk.api.client.ApiClient
+import org.jellyfin.sdk.api.client.extensions.userLibraryApi
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.ItemSortBy
@@ -90,50 +93,77 @@ import org.jellyfin.sdk.model.api.request.GetItemsRequest
 import timber.log.Timber
 import java.time.LocalDate
 import java.util.UUID
-import javax.inject.Inject
 
-@HiltViewModel
+@HiltViewModel(assistedFactory = PersonViewModel.Factory::class)
 class PersonViewModel
-    @Inject
+    @AssistedInject
     constructor(
-        api: ApiClient,
+        private val api: ApiClient,
         val navigationManager: NavigationManager,
         private val favoriteWatchManager: FavoriteWatchManager,
         private val seerrService: SeerrService,
-    ) : LoadingItemViewModel(api) {
-        val movies = MutableLiveData<RowLoadingState>(RowLoadingState.Pending)
-        val series = MutableLiveData<RowLoadingState>(RowLoadingState.Pending)
-        val episodes = MutableLiveData<RowLoadingState>(RowLoadingState.Pending)
-        val discovered = MutableStateFlow<List<DiscoverItem>>(listOf())
+        @Assisted val itemId: UUID,
+    ) : ViewModel() {
+        @AssistedFactory
+        interface Factory {
+            fun create(itemId: UUID): PersonViewModel
+        }
 
-        fun init(itemId: UUID) {
-            viewModelScope.launchIO(
-                LoadingExceptionHandler(
-                    loading,
-                    "Error loading item $itemId",
-                ),
-            ) {
-                super.init(itemId, null).await()?.let { person ->
+        private val _state = MutableStateFlow(PersonState())
+        val state: StateFlow<PersonState> = _state
+
+        private suspend fun updatePerson(): BaseItem {
+            val person =
+                api.userLibraryApi
+                    .getItem(itemId)
+                    .content
+                    .let { BaseItem(it) }
+            _state.update {
+                it.copy(
+                    person = DataLoadingState.Success(person),
+                )
+            }
+            return person
+        }
+
+        init {
+            viewModelScope.launchIO {
+                try {
+                    val person = updatePerson()
                     val dto = person.data
                     if ((dto.movieCount ?: 0) > 0) {
-                        fetchRow(person.id, BaseItemKind.MOVIE, movies)
+                        fetchRow(person.id, BaseItemKind.MOVIE) { state, row ->
+                            state.copy(movies = row)
+                        }
                     } else {
-                        movies.setValueOnMain(RowLoadingState.Success(listOf()))
+                        _state.update { it.copy(movies = RowLoadingState.Success(emptyList())) }
                     }
                     if ((dto.seriesCount ?: 0) > 0) {
-                        fetchRow(person.id, BaseItemKind.SERIES, series)
+                        fetchRow(person.id, BaseItemKind.SERIES) { state, row ->
+                            state.copy(series = row)
+                        }
                     } else {
-                        series.setValueOnMain(RowLoadingState.Success(listOf()))
+                        _state.update { it.copy(series = RowLoadingState.Success(emptyList())) }
                     }
                     if ((dto.episodeCount ?: 0) > 0) {
-                        fetchRow(person.id, BaseItemKind.EPISODE, episodes)
+                        fetchRow(person.id, BaseItemKind.EPISODE) { state, row ->
+                            state.copy(episodes = row)
+                        }
                     } else {
-                        episodes.setValueOnMain(RowLoadingState.Success(listOf()))
+                        _state.update { it.copy(episodes = RowLoadingState.Success(emptyList())) }
                     }
                     viewModelScope.launchIO {
                         val results = seerrService.similar(person).orEmpty()
-                        discovered.update { results }
+                        _state.update {
+                            it.copy(
+                                discovered = results,
+                                discoverPerson = seerrService.discoverPerson(person),
+                            )
+                        }
                     }
+                } catch (ex: Exception) {
+                    Timber.e(ex, "Error fetching person %s", itemId)
+                    _state.update { it.copy(person = DataLoadingState.Error(ex)) }
                 }
             }
         }
@@ -141,16 +171,18 @@ class PersonViewModel
         private fun fetchRow(
             itemId: UUID,
             type: BaseItemKind,
-            target: MutableLiveData<RowLoadingState>,
+            update: (PersonState, RowLoadingState) -> PersonState,
         ) {
             viewModelScope.launchIO {
-                target.setValueOnMain(RowLoadingState.Loading)
+                _state.update {
+                    update.invoke(it, RowLoadingState.Loading)
+                }
                 try {
                     val request =
                         GetItemsRequest(
                             personIds = listOf(itemId),
                             includeItemTypes = listOf(type),
-                            fields = SlimItemFields,
+                            fields = ItemRowFields,
                             recursive = true,
                             sortBy = listOf(ItemSortBy.PREMIERE_DATE, ItemSortBy.PRODUCTION_YEAR, ItemSortBy.SORT_NAME),
                             sortOrder = listOf(SortOrder.DESCENDING, SortOrder.DESCENDING, SortOrder.ASCENDING),
@@ -164,96 +196,121 @@ class PersonViewModel
                             pageSize = 15,
                             useSeriesForPrimary = false,
                         ).init()
-                    target.setValueOnMain(RowLoadingState.Success(pager))
+                    _state.update {
+                        update.invoke(it, RowLoadingState.Success(pager))
+                    }
                 } catch (ex: Exception) {
                     Timber.e(ex, "Error fetching $type for $itemId")
-                    target.setValueOnMain(RowLoadingState.Error(ex))
+                    _state.update {
+                        update.invoke(it, RowLoadingState.Error(ex))
+                    }
                 }
             }
         }
 
         fun setFavorite(favorite: Boolean) {
             viewModelScope.launchIO {
-                itemUuid?.let {
-                    favoriteWatchManager.setFavorite(it, favorite)
-                    fetchAndSetItem(it)
-                }
+                favoriteWatchManager.setFavorite(itemId, favorite)
+                updatePerson()
             }
         }
     }
+
+data class PersonState(
+    val person: DataLoadingState<BaseItem> = DataLoadingState.Pending,
+    val movies: RowLoadingState = RowLoadingState.Pending,
+    val series: RowLoadingState = RowLoadingState.Pending,
+    val episodes: RowLoadingState = RowLoadingState.Pending,
+    val discovered: List<DiscoverItem> = emptyList(),
+    val discoverPerson: DiscoverItem? = null,
+)
 
 @Composable
 fun PersonPage(
     preferences: UserPreferences,
     destination: Destination.MediaItem,
     modifier: Modifier = Modifier,
-    viewModel: PersonViewModel = hiltViewModel(),
+    viewModel: PersonViewModel =
+        hiltViewModel<PersonViewModel, PersonViewModel.Factory>(
+            creationCallback = { it.create(destination.itemId) },
+        ),
 ) {
-    OneTimeLaunchedEffect {
-        viewModel.init(destination.itemId)
-    }
-    val person by viewModel.item.observeAsState()
-    val movies by viewModel.movies.observeAsState(RowLoadingState.Pending)
-    val series by viewModel.series.observeAsState(RowLoadingState.Pending)
-    val episodes by viewModel.episodes.observeAsState(RowLoadingState.Pending)
-    val discovered by viewModel.discovered.collectAsState()
-
-    val loading by viewModel.loading.observeAsState(LoadingState.Loading)
-    when (val state = loading) {
-        is LoadingState.Error -> {
-            ErrorMessage(state, modifier)
+    val state by viewModel.state.collectAsState()
+    when (val st = state.person) {
+        is DataLoadingState.Error -> {
+            ErrorMessage(st, modifier)
         }
 
-        LoadingState.Loading,
-        LoadingState.Pending,
+        DataLoadingState.Loading,
+        DataLoadingState.Pending,
         -> {
             LoadingPage(modifier)
         }
 
-        LoadingState.Success -> {
-            person?.let { person ->
-                var showOverviewDialog by remember { mutableStateOf(false) }
-                val name = person.name ?: person.id.toString()
-                val imageUrlService = LocalImageUrlService.current
-                val imageUrl = remember { imageUrlService.getItemImageUrl(itemId = person.id, imageType = ImageType.PRIMARY) }
-                PersonPageContent(
-                    preferences = preferences,
-                    name = name,
-                    overview = person.data.overview,
-                    imageUrl = imageUrl,
-                    birthdate = person.data.premiereDate?.toLocalDate(),
-                    deathdate = person.data.endDate?.toLocalDate(),
-                    birthPlace = person.data.productionLocations?.firstOrNull(),
-                    favorite = person.favorite,
-                    movies = movies,
-                    series = series,
-                    episodes = episodes,
-                    onClickItem = { index, item ->
-                        viewModel.navigationManager.navigateTo(item.destination())
-                    },
-                    overviewOnClick = { showOverviewDialog = true },
-                    favoriteOnClick = {
-                        viewModel.setFavorite(!person.favorite)
-                    },
-                    discovered = discovered,
-                    onClickDiscover = { index, item ->
-                        viewModel.navigationManager.navigateTo(item.destination)
-                    },
-                    modifier = modifier,
-                )
-                AnimatedVisibility(showOverviewDialog) {
-                    ItemDetailsDialog(
-                        info =
-                            ItemDetailsDialogInfo(
-                                title = name,
-                                overview = person.data.overview,
-                                genres = listOf(),
-                                files = listOf(),
-                            ),
-                        showFilePath = false,
-                        onDismissRequest = { showOverviewDialog = false },
+        is DataLoadingState.Success<BaseItem> -> {
+            val person = st.data
+            var showOverviewDialog by remember { mutableStateOf(false) }
+            val name = remember(person) { person.name ?: person.id.toString() }
+            val imageUrlService = LocalImageUrlService.current
+            val imageUrl =
+                remember {
+                    imageUrlService.getItemImageUrl(
+                        itemId = person.id,
+                        imageType = ImageType.PRIMARY,
+                        tag = person.data.imageTags?.get(ImageType.PRIMARY),
                     )
                 }
+            // A long filmography is hard to navigate as a row, so it is cut at the same
+            // limit as the home page rows and the rest is left to the full grid
+            val maxItems = preferences.appPreferences.homePagePreferences.maxItemsPerRow
+            val discovered =
+                remember(state.discovered, maxItems) { state.discovered.take(maxItems) }
+
+            PersonPageContent(
+                preferences = preferences,
+                name = name,
+                overview = person.data.overview,
+                imageUrl = imageUrl,
+                birthdate = person.data.premiereDate?.toLocalDate(),
+                deathdate = person.data.endDate?.toLocalDate(),
+                birthPlace = person.data.productionLocations?.firstOrNull(),
+                favorite = person.favorite,
+                movies = state.movies,
+                series = state.series,
+                episodes = state.episodes,
+                onClickItem = { index, item ->
+                    viewModel.navigationManager.navigateTo(item.destination())
+                },
+                overviewOnClick = { showOverviewDialog = true },
+                favoriteOnClick = {
+                    viewModel.setFavorite(!person.favorite)
+                },
+                discovered = discovered,
+                onClickDiscover = { index, item ->
+                    viewModel.navigationManager.navigateTo(item.destination)
+                },
+                onClickViewMoreDiscover = {
+                    state.discoverPerson?.let {
+                        viewModel.navigationManager.navigateTo(
+                            Destination.DiscoveredItem(it, maxItems),
+                        )
+                    }
+                },
+                enableViewMoreDiscover = state.discovered.size > discovered.size,
+                modifier = modifier,
+            )
+            AnimatedVisibility(showOverviewDialog) {
+                ItemDetailsDialog(
+                    info =
+                        ItemDetailsDialogInfo(
+                            title = name,
+                            overview = person.data.overview,
+                            genres = listOf(),
+                            files = listOf(),
+                        ),
+                    showFilePath = false,
+                    onDismissRequest = { showOverviewDialog = false },
+                )
             }
         }
     }
@@ -283,6 +340,8 @@ fun PersonPageContent(
     overviewOnClick: () -> Unit,
     favoriteOnClick: () -> Unit,
     onClickDiscover: (Int, DiscoverItem) -> Unit,
+    onClickViewMoreDiscover: () -> Unit,
+    enableViewMoreDiscover: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val focusRequester = remember { FocusRequester() }
@@ -325,7 +384,7 @@ fun PersonPageContent(
         }
         item {
             LoadingRow(
-                title = rowTitle(stringResource(R.string.movies), movies),
+                title = rowTitle(stringResource(R.string.movies_title), movies),
                 state = movies,
                 rowIndex = MOVIE_ROW,
                 position = position,
@@ -338,7 +397,7 @@ fun PersonPageContent(
         }
         item {
             LoadingRow(
-                title = rowTitle(stringResource(R.string.tv_shows), series),
+                title = rowTitle(stringResource(R.string.tv_shows_title), series),
                 state = series,
                 rowIndex = SERIES_ROW,
                 position = position,
@@ -370,6 +429,7 @@ fun PersonPageContent(
                         },
                         onLongClick = onLongClick,
                         imageHeight = Cards.heightEpisode,
+                        aspectRatio = item?.aspectRatio ?: AspectRatios.FOUR_THREE,
                         modifier =
                             mod
                                 .ifElse(
@@ -385,7 +445,7 @@ fun PersonPageContent(
                 DiscoverRow(
                     row =
                         DiscoverRowData(
-                            stringResource(R.string.discover),
+                            ResStringProvider(R.string.discover),
                             DataLoadingState.Success(discovered),
                             DiscoverRequestType.UNKNOWN,
                         ),
@@ -396,6 +456,11 @@ fun PersonPageContent(
                     onLongClickItem = { _, _ -> },
                     onCardFocus = {},
                     focusRequester = focusRequester,
+                    enableViewMore = enableViewMoreDiscover,
+                    onClickViewMore = {
+                        position = RowColumn(DISCOVER_ROW, discovered.size)
+                        onClickViewMoreDiscover.invoke()
+                    },
                 )
             }
         }
@@ -465,8 +530,9 @@ fun PersonHeader(
                 val text =
                     if (age != null) {
                         stringResource(R.string.born) + ": ${formatDate(it)} (${
-                            stringResource(
-                                R.string.years_old,
+                            pluralStringResource(
+                                R.plurals.years_old,
+                                age,
                                 age,
                             )
                         })"
@@ -495,8 +561,9 @@ fun PersonHeader(
                 val text =
                     if (age != null) {
                         stringResource(R.string.died) + ": ${formatDate(it)} (${
-                            stringResource(
-                                R.string.years_old,
+                            pluralStringResource(
+                                R.plurals.years_old,
+                                age,
                                 age,
                             )
                         })"

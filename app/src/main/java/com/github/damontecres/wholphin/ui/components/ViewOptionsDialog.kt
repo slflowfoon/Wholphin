@@ -4,8 +4,11 @@ import android.view.Gravity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,6 +22,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -37,12 +41,13 @@ import com.github.damontecres.wholphin.ui.AspectRatio
 import com.github.damontecres.wholphin.ui.preferences.ComposablePreference
 import com.github.damontecres.wholphin.ui.tryRequestFocus
 import kotlinx.serialization.Serializable
+import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 
 /**
  * A dialog that shows the controls for making changes to a [ViewOptions] object. The caller must manage the state of the [ViewOptions].
  *
- * It displays the [AppPreference] objects from [ViewOptions.OPTIONS]
+ * It displays the [AppPreference] objects from [ViewOptions.GRID_OPTIONS]
  */
 @Composable
 fun ViewOptionsDialog(
@@ -50,6 +55,7 @@ fun ViewOptionsDialog(
     onDismissRequest: () -> Unit,
     onViewOptionsChange: (ViewOptions) -> Unit,
     defaultViewOptions: ViewOptions = ViewOptions(),
+    showArtistSource: Boolean = false,
 ) {
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.tryRequestFocus() }
@@ -66,48 +72,69 @@ fun ViewOptionsDialog(
             window.setGravity(Gravity.END)
             window.setDimAmount(0f)
         }
-        LazyColumn(
-            state = columnState,
-            contentPadding = PaddingValues(16.dp),
+        val options =
+            remember(viewOptions.type, showArtistSource) {
+                when (viewOptions.type) {
+                    ViewOptionsType.GRID -> ViewOptions.buildGridOptions(showArtistSource)
+                    ViewOptionsType.LIST -> ViewOptions.buildListOptions(showArtistSource)
+                    ViewOptionsType.DENSE_LIST -> ViewOptions.buildListOptions(showArtistSource)
+                }
+            }
+        Column(
             verticalArrangement = Arrangement.spacedBy(0.dp),
             modifier =
                 Modifier
                     .width(256.dp)
                     .heightIn(max = 380.dp)
-                    .focusRequester(focusRequester)
                     .background(
                         MaterialTheme.colorScheme.surfaceColorAtElevation(6.dp),
                         shape = RoundedCornerShape(8.dp),
                     ),
         ) {
-            stickyHeader {
-                Text(
-                    text = stringResource(R.string.view_options),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
-            items(ViewOptions.OPTIONS) { pref ->
-                pref as AppPreference<ViewOptions, Any>
-                val interactionSource = remember { MutableInteractionSource() }
-                val value = pref.getter.invoke(viewOptions)
-                ComposablePreference(
-                    preference = pref,
-                    value = value,
-                    onNavigate = {},
-                    onValueChange = { newValue ->
-                        onViewOptionsChange.invoke(pref.setter(viewOptions, newValue))
-                    },
-                    interactionSource = interactionSource,
-                    modifier = Modifier,
-                    onClickPreference = { pref ->
-                        if (pref == ViewOptions.ViewOptionsReset) {
-                            onViewOptionsChange.invoke(defaultViewOptions)
-                        }
-                    },
-                )
+            Text(
+                text = stringResource(R.string.view_options),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+                modifier =
+                    Modifier
+                        .padding(vertical = 8.dp)
+                        .fillMaxWidth(),
+            )
+            LazyColumn(
+                state = columnState,
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+                modifier = Modifier.focusRequester(focusRequester),
+            ) {
+                items(options, key = { it.title }) { pref ->
+                    pref as AppPreference<ViewOptions, Any>
+                    val interactionSource = remember { MutableInteractionSource() }
+                    val value = pref.getter.invoke(viewOptions)
+                    ComposablePreference(
+                        preference = pref,
+                        value = value,
+                        onNavigate = {},
+                        onValueChange = { newValue ->
+                            onViewOptionsChange.invoke(pref.setter(viewOptions, newValue))
+                        },
+                        interactionSource = interactionSource,
+                        modifier = Modifier,
+                        onClickPreference = { pref ->
+                            if (pref == ViewOptions.ViewOptionsReset) {
+                                onViewOptionsChange.invoke(defaultViewOptions)
+                            }
+                        },
+                    )
+                }
             }
         }
     }
+}
+
+/** Which Jellyfin artists list backs the Music > Artists tab */
+enum class ArtistSource {
+    ARTIST,
+    ALBUM_ARTIST,
 }
 
 /**
@@ -122,8 +149,11 @@ data class ViewOptions(
     val contentScale: PrefContentScale = PrefContentScale.FIT,
     val aspectRatio: AspectRatio = AspectRatio.TALL,
     val showDetails: Boolean = false,
+    val showBackdrop: Boolean = false,
     val imageType: ViewOptionImageType = ViewOptionImageType.PRIMARY,
     val showTitles: Boolean = true,
+    val type: ViewOptionsType = ViewOptionsType.GRID,
+    val extras: ViewOptionsExtras = ViewOptionsExtras.None,
 ) {
     companion object {
         val ViewOptionsColumns =
@@ -176,6 +206,13 @@ data class ViewOptions(
                 getter = { it.showDetails },
                 setter = { vo, value -> vo.copy(showDetails = value) },
             )
+        val ViewOptionsBackdrop =
+            AppSwitchPreference<ViewOptions>(
+                title = R.string.show_backdrop,
+                defaultValue = false,
+                getter = { it.showBackdrop },
+                setter = { vo, value -> vo.copy(showBackdrop = value) },
+            )
         val ViewOptionsShowTitles =
             AppSwitchPreference<ViewOptions>(
                 title = R.string.show_titles,
@@ -202,20 +239,81 @@ data class ViewOptions(
                 valueToIndex = { it.ordinal },
             )
 
+        val ViewOptionsTypePref =
+            AppChoicePreference<ViewOptions, ViewOptionsType>(
+                title = R.string.layout,
+                defaultValue = ViewOptionsType.GRID,
+                displayValues = R.array.view_options_types,
+                getter = { it.type },
+                setter = { viewOptions, value ->
+                    val spacing =
+                        when (value) {
+                            ViewOptionsType.GRID -> 16
+                            ViewOptionsType.LIST -> 4
+                            ViewOptionsType.DENSE_LIST -> 2
+                        }
+                    viewOptions.copy(type = value, spacing = spacing)
+                },
+                indexToValue = { ViewOptionsType.entries[it] },
+                valueToIndex = { it.ordinal },
+            )
+
+        val ViewOptionsArtistSource =
+            AppChoicePreference<ViewOptions, ArtistSource>(
+                title = R.string.artist_source,
+                defaultValue = ArtistSource.ARTIST,
+                displayValues = R.array.artist_sources,
+                getter = { it.artistSource },
+                setter = { viewOptions, value ->
+                    viewOptions.copy(extras = ViewOptionsExtras.MusicLibrary(value))
+                },
+                indexToValue = { ArtistSource.entries[it] },
+                valueToIndex = { it.ordinal },
+            )
+
         val ViewOptionsReset =
             AppClickablePreference<ViewOptions>(
                 title = R.string.reset,
             )
 
-        val OPTIONS =
+        /**
+         * Get the options for a grid [ViewOptions]
+         */
+        fun buildGridOptions(showArtistSource: Boolean) =
+            buildList {
+                if (showArtistSource) add(ViewOptionsArtistSource)
+                addAll(GRID_OPTIONS)
+            }
+
+        private val GRID_OPTIONS =
             listOf(
+                ViewOptionsTypePref,
                 ViewOptionsImageType,
                 ViewOptionsAspectRatio,
                 ViewOptionsDetailHeader,
+                ViewOptionsBackdrop,
                 ViewOptionsShowTitles,
                 ViewOptionsColumns,
                 ViewOptionsSpacing,
                 ViewOptionsContentScale,
+                ViewOptionsReset,
+            )
+
+        /**
+         * Get the options for a list [ViewOptions]
+         */
+        fun buildListOptions(showArtistSource: Boolean) =
+            buildList {
+                if (showArtistSource) add(ViewOptionsArtistSource)
+                addAll(LIST_OPTIONS)
+            }
+
+        private val LIST_OPTIONS =
+            listOf(
+                ViewOptionsTypePref,
+                ViewOptionsDetailHeader,
+                ViewOptionsBackdrop,
+                ViewOptionsSpacing,
                 ViewOptionsReset,
             )
     }
@@ -249,3 +347,52 @@ enum class ViewOptionImageType(
     THUMB(ImageType.THUMB),
 //    BANNER(ImageType.BANNER),
 }
+
+enum class ViewOptionsType {
+    GRID,
+    LIST,
+    DENSE_LIST,
+}
+
+val BaseItemKind.defaultViewOptions: ViewOptions
+    get() =
+        when (this) {
+            BaseItemKind.AUDIO,
+            BaseItemKind.MUSIC_ALBUM,
+            BaseItemKind.MUSIC_ARTIST,
+            BaseItemKind.PLAYLIST,
+            -> ViewOptionsSquare
+
+            BaseItemKind.EPISODE,
+            BaseItemKind.VIDEO,
+            BaseItemKind.MUSIC_VIDEO,
+            BaseItemKind.PHOTO,
+            BaseItemKind.PHOTO_ALBUM,
+            BaseItemKind.TV_CHANNEL,
+            BaseItemKind.LIVE_TV_CHANNEL,
+            BaseItemKind.PROGRAM,
+            BaseItemKind.TV_PROGRAM,
+            BaseItemKind.LIVE_TV_PROGRAM,
+            -> ViewOptionsWide
+
+            else -> ViewOptionsPoster
+        }
+
+/**
+ * Extras [ViewOptions] info that is context or library specific
+ */
+@Serializable
+sealed interface ViewOptionsExtras {
+    @Serializable
+    data object None : ViewOptionsExtras
+
+    @Serializable
+    data class MusicLibrary(
+        val artistSource: ArtistSource = ArtistSource.ARTIST,
+    ) : ViewOptionsExtras
+}
+
+/**
+ * The [ArtistSource] if the [ViewOptions.extras] is a [ViewOptionsExtras.MusicLibrary]
+ */
+val ViewOptions.artistSource: ArtistSource get() = (extras as? ViewOptionsExtras.MusicLibrary)?.artistSource ?: ArtistSource.ARTIST

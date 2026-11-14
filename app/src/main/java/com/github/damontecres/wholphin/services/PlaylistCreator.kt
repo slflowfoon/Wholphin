@@ -8,29 +8,27 @@ import com.github.damontecres.wholphin.data.model.GetItemsFilter
 import com.github.damontecres.wholphin.data.model.Playlist
 import com.github.damontecres.wholphin.data.model.PlaylistInfo
 import com.github.damontecres.wholphin.data.model.PlaylistItem
-import com.github.damontecres.wholphin.ui.DefaultItemFields
+import com.github.damontecres.wholphin.ui.DetailItemFields
 import com.github.damontecres.wholphin.ui.components.baseItemKinds
 import com.github.damontecres.wholphin.ui.data.SortAndDirection
 import com.github.damontecres.wholphin.ui.gt
 import com.github.damontecres.wholphin.ui.indexOfFirstOrNull
 import com.github.damontecres.wholphin.ui.playback.playable
-import com.github.damontecres.wholphin.ui.toBaseItems
 import com.github.damontecres.wholphin.ui.toServerString
-import com.github.damontecres.wholphin.util.ApiRequestPager
 import com.github.damontecres.wholphin.util.GetEpisodesRequestHandler
 import com.github.damontecres.wholphin.util.GetItemsRequestHandler
-import com.github.damontecres.wholphin.util.TransformList
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
 import org.jellyfin.sdk.api.client.ApiClient
+import org.jellyfin.sdk.api.client.exception.InvalidStatusException
 import org.jellyfin.sdk.api.client.extensions.playlistsApi
-import org.jellyfin.sdk.api.client.extensions.userLibraryApi
+import org.jellyfin.sdk.api.client.extensions.tvShowsApi
 import org.jellyfin.sdk.api.client.extensions.videosApi
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.CreatePlaylistDto
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.ItemSortBy
+import org.jellyfin.sdk.model.api.LocationType
 import org.jellyfin.sdk.model.api.MediaType
 import org.jellyfin.sdk.model.api.PlaylistUserPermissions
 import org.jellyfin.sdk.model.api.SortOrder
@@ -57,7 +55,7 @@ class PlaylistCreator
         /**
          * Creates a playlist of next up episodes for the given series starting with the given episode
          */
-        suspend fun createFromEpisode(
+        private suspend fun createFromEpisode(
             seriesId: UUID,
             episodeId: UUID?,
             seasonId: UUID? = null,
@@ -67,7 +65,7 @@ class PlaylistCreator
                 GetEpisodesRequest(
                     seriesId = seriesId,
                     seasonId = seasonId,
-                    fields = DefaultItemFields,
+                    fields = DetailItemFields,
                     startItemId = episodeId,
                     sortBy = if (shuffled) ItemSortBy.RANDOM else null,
                     limit = Playlist.MAX_SIZE,
@@ -79,13 +77,13 @@ class PlaylistCreator
                     .convertAndAddParts(false)
             val startIndex =
                 episodeId?.let { episodes.indexOfFirstOrNull { it.id == episodeId } } ?: 0
-            return Playlist(episodes, startIndex)
+            return Playlist(episodes.subList(startIndex, episodes.size))
         }
 
         /**
          * Create from a server playlist ID
          */
-        suspend fun createFromPlaylistId(
+        private suspend fun createFromPlaylistId(
             playlistId: UUID,
             startIndex: Int?,
             sortAndDirection: SortAndDirection,
@@ -94,17 +92,18 @@ class PlaylistCreator
             val request =
                 filter.applyTo(
                     GetItemsRequest(
-                        userId = serverRepository.currentUser.value?.id,
+                        userId = serverRepository.currentUser?.id,
                         parentId = playlistId,
-                        fields = DefaultItemFields,
+                        fields = DetailItemFields,
                         startIndex = startIndex,
                         limit = Playlist.MAX_SIZE,
                         sortBy = listOf(sortAndDirection.sort),
                         sortOrder = listOf(sortAndDirection.direction),
+                        excludeLocationTypes = listOf(LocationType.VIRTUAL),
                     ),
                 )
             val items = GetItemsRequestHandler.execute(api, request).content.items
-            return Playlist(items.convertAndAddParts(), 0)
+            return Playlist(items.convertAndAddParts())
         }
 
         private suspend fun createFromCollection(
@@ -136,9 +135,10 @@ class PlaylistCreator
                             excludeItemIds = listOf(item.id),
                             sortBy = sortAndDirection?.let { listOf(sortAndDirection.sort) },
                             sortOrder = sortAndDirection?.let { listOf(sortAndDirection.direction) },
-                            fields = DefaultItemFields,
+                            fields = DetailItemFields,
                             startIndex = startIndex,
                             limit = Playlist.MAX_SIZE,
+                            excludeLocationTypes = listOf(LocationType.VIRTUAL),
                         ),
                 )
             val items =
@@ -146,7 +146,7 @@ class PlaylistCreator
                     .execute(api, request)
                     .content.items
                     .convertAndAddParts()
-            return Playlist(items, 0)
+            return Playlist(items)
         }
 
         /**
@@ -201,28 +201,72 @@ class PlaylistCreator
                 BaseItemKind.SEASON -> {
                     val seriesId = item.seriesId
                     if (seriesId != null) {
-                        PlaylistCreationResult.Success(
-                            createFromEpisode(
-                                seriesId = seriesId,
-                                seasonId = item.id,
-                                episodeId = null,
-                                shuffled = shuffled,
-                            ),
-                        )
+                        if (shuffled) {
+                            api.tvShowsApi
+                                .getEpisodes(
+                                    seriesId = seriesId,
+                                    seasonId = item.id,
+                                    limit = Playlist.MAX_SIZE,
+                                    sortBy = ItemSortBy.RANDOM,
+                                    fields = DetailItemFields,
+                                ).content.items
+                                .convertAndAddParts()
+                                .let {
+                                    PlaylistCreationResult.Success(Playlist(it))
+                                }
+                        } else {
+                            PlaylistCreationResult.Success(
+                                createFromEpisode(
+                                    seriesId = seriesId,
+                                    seasonId = item.id,
+                                    episodeId = null,
+                                    shuffled = shuffled,
+                                ),
+                            )
+                        }
                     } else {
                         PlaylistCreationResult.Error(null, "Episode has no seriesId")
                     }
                 }
 
                 BaseItemKind.SERIES -> {
-                    PlaylistCreationResult.Success(
-                        createFromEpisode(
-                            seriesId = item.id,
-                            seasonId = null,
-                            episodeId = null,
-                            shuffled = shuffled,
-                        ),
-                    )
+                    if (shuffled) {
+                        api.tvShowsApi
+                            .getEpisodes(
+                                seriesId = item.id,
+                                limit = Playlist.MAX_SIZE,
+                                sortBy = ItemSortBy.RANDOM,
+                                fields = DetailItemFields,
+                            ).content.items
+                            .convertAndAddParts()
+                            .let {
+                                PlaylistCreationResult.Success(Playlist(it))
+                            }
+                    } else {
+                        val result by api.tvShowsApi.getNextUp(seriesId = item.id)
+                        val nextUp =
+                            result.items.firstOrNull() ?: api.tvShowsApi
+                                .getEpisodes(
+                                    item.id,
+                                    limit = 1,
+                                ).content.items
+                                .firstOrNull()
+                        if (nextUp != null) {
+                            PlaylistCreationResult.Success(
+                                createFromEpisode(
+                                    seriesId = item.id,
+                                    seasonId = null,
+                                    episodeId = nextUp.id,
+                                    shuffled = shuffled,
+                                ),
+                            )
+                        } else {
+                            PlaylistCreationResult.Error(
+                                null,
+                                "Could not determine next up episode for series: " + item.id,
+                            )
+                        }
+                    }
                 }
 
                 BaseItemKind.PLAYLIST -> {
@@ -247,6 +291,7 @@ class PlaylistCreator
                 BaseItemKind.MOVIE,
                 BaseItemKind.VIDEO,
                 BaseItemKind.MUSIC_VIDEO,
+                BaseItemKind.TRAILER,
                 -> {
                     val list =
                         buildList {
@@ -261,7 +306,7 @@ class PlaylistCreator
                                     }.let(::addAll)
                             }
                         }
-                    PlaylistCreationResult.Success(Playlist(list, 0))
+                    PlaylistCreationResult.Success(Playlist(list))
                 }
 
                 // Not support yet
@@ -279,49 +324,74 @@ class PlaylistCreator
 
         private suspend fun List<BaseItemDto>.convertAndAddParts(useSeriesForPrimary: Boolean = false): List<PlaylistItem> =
             buildList {
-                this@convertAndAddParts.forEach { ep ->
-                    add(PlaylistItem.Media(BaseItem(ep, useSeriesForPrimary)))
-                    if (ep.partCount.gt(1)) {
-                        val parts =
-                            api.videosApi.getAdditionalPart(ep.id).content.items.map { part ->
-                                PlaylistItem.Media(BaseItem(part, useSeriesForPrimary))
-                            }
-                        addAll(parts)
+                this@convertAndAddParts
+                    .filter { it.locationType != LocationType.VIRTUAL }
+                    .forEach { ep ->
+                        add(PlaylistItem.Media(BaseItem(ep, useSeriesForPrimary)))
+                        if (ep.partCount.gt(1)) {
+                            val parts =
+                                api.videosApi.getAdditionalPart(ep.id).content.items.map { part ->
+                                    PlaylistItem.Media(BaseItem(part, useSeriesForPrimary))
+                                }
+                            addAll(parts)
+                        }
                     }
-                }
             }
 
         /**
          * Get the playlists on the server for a given media type
          */
         suspend fun getServerPlaylists(
+            query: String,
             mediaType: MediaType?,
-            scope: CoroutineScope,
-        ): List<PlaylistInfo?> {
+        ): List<PlaylistInfo> {
+            val userId =
+                serverRepository.currentUser?.id ?: throw IllegalStateException("No user found")
             val request =
                 GetItemsRequest(
+                    searchTerm = query.takeIf { it.isNotBlank() },
                     includeItemTypes = listOf(BaseItemKind.PLAYLIST),
                     mediaTypes = mediaType?.let { listOf(mediaType) },
                     recursive = true,
+                    limit = 25,
+                    sortBy = listOf(ItemSortBy.DATE_LAST_CONTENT_ADDED),
+                    sortOrder = listOf(SortOrder.DESCENDING),
                 )
-            val pager = ApiRequestPager(api, request, GetItemsRequestHandler, scope).init()
-            return TransformList(pager) {
-                it?.let {
-                    PlaylistInfo(
-                        id = it.id,
-                        name = it.name ?: context.getString(R.string.unknown),
-                        count = it.data.childCount ?: 0,
-                        mediaType = it.data.mediaType,
-                    )
+            val playlists = GetItemsRequestHandler.execute(api, request).content.items
+            return playlists
+                .mapNotNull { playlist ->
+                    try {
+                        val response = api.playlistsApi.getPlaylistUser(playlist.id, userId).content
+                        if (response.canEdit) {
+                            PlaylistInfo(
+                                id = playlist.id,
+                                name = playlist.name ?: context.getString(R.string.unknown),
+                                count = playlist.childCount ?: 0,
+                                mediaType = playlist.mediaType,
+                            )
+                        } else {
+                            null
+                        }
+                    } catch (ex: InvalidStatusException) {
+                        if (ex.status == 404) {
+                            null
+                        } else {
+                            throw ex
+                        }
+                    }
                 }
-            }
+//                .sortedWith(
+//                    compareBy<PlaylistInfo> {
+//                        SearchRelevance.score(it.name, BaseItemKind.PLAYLIST, query)
+//                    }.thenBy { it.name },
+//                )
         }
 
         suspend fun createServerPlaylist(
             name: String,
             initialItems: List<UUID>,
         ): UUID? =
-            serverRepository.currentUser.value?.let { user ->
+            serverRepository.currentUser?.let { user ->
                 api.playlistsApi
                     .createPlaylist(
                         CreatePlaylistDto(

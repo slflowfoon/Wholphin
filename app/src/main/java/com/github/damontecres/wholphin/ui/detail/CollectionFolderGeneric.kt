@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -11,7 +12,7 @@ import com.github.damontecres.wholphin.data.filter.DefaultFilterOptions
 import com.github.damontecres.wholphin.data.filter.ItemFilterBy
 import com.github.damontecres.wholphin.data.model.CollectionFolderFilter
 import com.github.damontecres.wholphin.preferences.UserPreferences
-import com.github.damontecres.wholphin.ui.components.CollectionFolderGrid
+import com.github.damontecres.wholphin.ui.components.CollectionFolderView
 import com.github.damontecres.wholphin.ui.components.ViewOptionsPoster
 import com.github.damontecres.wholphin.ui.components.ViewOptionsWide
 import com.github.damontecres.wholphin.ui.data.VideoSortOptions
@@ -32,7 +33,7 @@ fun CollectionFolderGeneric(
     sortOptions: List<ItemSortBy> = VideoSortOptions,
     preferencesViewModel: PreferencesViewModel = hiltViewModel(),
 ) {
-    var showHeader by remember { mutableStateOf(true) }
+    var showHeader by rememberSaveable { mutableStateOf(true) }
     val viewOptions =
         remember(usePosters) {
             if (usePosters) {
@@ -41,7 +42,7 @@ fun CollectionFolderGeneric(
                 ViewOptionsWide
             }
         }
-    CollectionFolderGrid(
+    CollectionFolderView(
         preferences = preferences,
         onClickItem = { index, item ->
             preferencesViewModel.navigationManager.navigateTo(item.destination(index))

@@ -48,7 +48,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.compose.state.rememberCurrentMediaItemState
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -58,7 +60,6 @@ import com.github.damontecres.wholphin.data.model.AudioItem
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.BackdropStyle
 import com.github.damontecres.wholphin.preferences.UserPreferences
-import com.github.damontecres.wholphin.services.rememberQueue
 import com.github.damontecres.wholphin.ui.components.BasicDialog
 import com.github.damontecres.wholphin.ui.components.ContextMenu
 import com.github.damontecres.wholphin.ui.components.ContextMenuDialog
@@ -72,7 +73,9 @@ import com.github.damontecres.wholphin.ui.playback.overlay.BottomDialog
 import com.github.damontecres.wholphin.ui.playback.overlay.BottomDialogItem
 import com.github.damontecres.wholphin.ui.tryRequestFocus
 import com.github.damontecres.wholphin.util.LoadingState
+import kotlinx.coroutines.delay
 import org.jellyfin.sdk.model.extensions.ticks
+import java.util.Date
 import kotlin.time.Duration.Companion.seconds
 
 @OptIn(UnstableApi::class)
@@ -87,13 +90,8 @@ fun NowPlayingPage(
     val context = LocalContext.current
     val state by viewModel.state.collectAsState()
     val player = viewModel.player
-    val queue =
-        rememberQueue(
-            player,
-            state.musicServiceState.queueVersion,
-            state.musicServiceState.queueSize,
-        )
-    val current = queue.getOrNull(state.musicServiceState.currentIndex)
+    val currentMediaItem = rememberCurrentMediaItemState(player)
+    val current = (currentMediaItem.mediaItem?.localConfiguration?.tag as? AudioItem)
     val viz by viewModel.viz.collectAsState()
 
     val controllerViewState = viewModel.controllerViewState
@@ -102,6 +100,7 @@ fun NowPlayingPage(
             .collectAsState(
                 UserPreferences(
                     AppPreferences.getDefaultInstance(),
+                    null,
                 ),
             ).value.appPreferences
     val musicPrefs = preferences.musicPreferences
@@ -118,6 +117,7 @@ fun NowPlayingPage(
 //                seekBack = preferences.playbackPreferences.skipBackMs.milliseconds,
                 controllerViewState = controllerViewState,
                 updateSkipIndicator = {},
+                clearSkipIndicator = {},
                 skipBackOnResume = null,
 //                skipBackOnResume = preferences.playbackPreferences.skipBackOnResume,
                 onInteraction = viewModel::reportInteraction,
@@ -127,25 +127,37 @@ fun NowPlayingPage(
                 },
                 onPlaybackDialogTypeClick = { },
                 getDurationMs = { player.duration },
+                dpadSeekMode = preferences.playbackPreferences.dpadSeekMode,
+                onSeekToNext = {
+                    if (player.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT)) player.seekToNext()
+                },
+                onPSeekToPrevious = {
+                    if (player.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS)) player.seekToPrevious()
+                },
             )
         }
 
     var showViewOptionsDialog by remember { mutableStateOf(false) }
     var showContextMenu by remember { mutableStateOf<ContextMenu.ForQueue?>(null) }
 
-    var lyricsHaveFocus by remember { mutableStateOf(false) }
+    var lyricsFocused by remember { mutableStateOf<Date?>(null) }
 
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.tryRequestFocus() }
     val lyricsFocusRequester = remember { FocusRequester() }
     val hasLyrics = musicPrefs.showLyrics && state.hasLyrics
 
-    LaunchedEffect(lyricsHaveFocus) {
-        if (lyricsHaveFocus) {
+    LaunchedEffect(lyricsFocused) {
+        if (lyricsFocused != null) {
             controllerViewState.hideControls()
+            delay(5.seconds)
+            if (!controllerViewState.controlsVisible) {
+                focusRequester.tryRequestFocus()
+            }
+            lyricsFocused = null
         }
     }
-    BackHandler(lyricsHaveFocus) {
+    BackHandler(lyricsFocused != null) {
         focusRequester.tryRequestFocus()
     }
 
@@ -283,8 +295,10 @@ fun NowPlayingPage(
                     LyricsContent(
                         lyrics = state.lyrics,
                         currentLyricPosition = state.currentLyricIndex,
-                        lyricsHaveFocus = lyricsHaveFocus,
-                        onFocusLyrics = { lyricsHaveFocus = it },
+                        lyricsHaveFocus = lyricsFocused != null,
+                        onFocusLyrics = {
+                            lyricsFocused = Date()
+                        },
                         onClick = {
                             it.start
                                 ?.ticks
@@ -337,7 +351,6 @@ fun NowPlayingPage(
                 state = state,
                 player = player,
                 current = current,
-                queue = queue,
                 controllerViewState = controllerViewState,
                 onMoveQueue = { index, direction -> viewModel.moveQueue(index, direction) },
                 onClickMore = { showViewOptionsDialog = true },

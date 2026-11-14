@@ -1,6 +1,7 @@
 package com.github.damontecres.wholphin.services
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -21,8 +22,8 @@ import com.github.damontecres.wholphin.services.hilt.StandardOkHttpClient
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import com.github.damontecres.wholphin.ui.showToast
 import com.github.damontecres.wholphin.util.Version
+import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -60,8 +61,6 @@ class UpdateChecker
             const val APK_NAME = "$ASSET_NAME.apk"
 
             private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
-
-            private const val PERMISSION_REQUEST_CODE = 123456
 
             private val NOTE_REGEX = Regex("<!-- app-note:(.+) -->")
 
@@ -131,7 +130,7 @@ class UpdateChecker
         suspend fun getRelease(version: Version): Release? {
             val url =
                 "https://api.github.com/repos/slflowfoon/Wholphin/releases/tags/v${version.major}.${version.minor}.${version.patch}"
-            return withContext(Dispatchers.IO) {
+            return withContext(WholphinDispatchers.IO) {
                 val request =
                     Request
                         .Builder()
@@ -146,7 +145,7 @@ class UpdateChecker
          * Get the latest released version
          */
         suspend fun getLatestRelease(updateUrl: String): Release? =
-            withContext(Dispatchers.IO) {
+            withContext(WholphinDispatchers.IO) {
                 val request =
                     Request
                         .Builder()
@@ -158,8 +157,8 @@ class UpdateChecker
 
         private fun getRelease(request: Request): Release? {
             return okHttpClient.newCall(request).execute().use {
-                if (it.isSuccessful && it.body != null) {
-                    val result = Json.parseToJsonElement(it.body!!.string())
+                if (it.isSuccessful) {
+                    val result = Json.parseToJsonElement(it.body.string())
                     val name = result.jsonObject["name"]?.jsonPrimitive?.contentOrNull
                     val version = Version.tryFromString(name)
                     val publishedAt =
@@ -195,11 +194,12 @@ class UpdateChecker
         /**
          * Download and install an update
          */
+        @SuppressLint("RequestInstallPackagesPolicy")
         suspend fun installRelease(
             release: Release,
             callback: DownloadCallback,
         ) {
-            withContext(Dispatchers.IO) {
+            withContext(WholphinDispatchers.IO) {
                 cleanup()
                 val request =
                     Request
@@ -208,11 +208,9 @@ class UpdateChecker
                         .get()
                         .build()
                 okHttpClient.newCall(request).execute().use {
-                    if (it.isSuccessful && it.body != null) {
+                    if (it.isSuccessful) {
                         Timber.v("Request successful for ${release.downloadUrl}")
-                        withContext(Dispatchers.Main) {
-                            callback.contentLength(it.body.contentLength())
-                        }
+                        callback.contentLength(it.body.contentLength())
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             val contentValues =
                                 ContentValues().apply {
@@ -230,7 +228,7 @@ class UpdateChecker
                                     contentValues,
                                 )
                             if (uri != null) {
-                                it.body!!.byteStream().use { input ->
+                                it.body.byteStream().use { input ->
                                     resolver.openOutputStream(uri).use { output ->
                                         copyTo(input, output!!, callback = callback)
                                     }
@@ -290,7 +288,7 @@ class UpdateChecker
             downloadDir.mkdirs()
             val targetFile = File(downloadDir, APK_NAME)
             targetFile.outputStream().use { output ->
-                response.body!!.byteStream().use { input ->
+                response.body.byteStream().use { input ->
                     copyTo(input, output, callback = callback)
                 }
             }
@@ -340,7 +338,7 @@ class UpdateChecker
                         context.contentResolver.delete(
                             MediaStore.Downloads.EXTERNAL_CONTENT_URI,
                             "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ? AND ${MediaStore.MediaColumns.MIME_TYPE} = ?",
-                            arrayOf(context.getString(R.string.app_name) + "%", APK_MIME_TYPE),
+                            arrayOf("$ASSET_NAME%", APK_MIME_TYPE),
                         )
                     Timber.i("Deleted $deletedRows rows")
                 } else {
@@ -374,7 +372,7 @@ data class Release(
                 Regex("https://github.com/\\w*/\\w+/pull/(\\d+)"),
                 "#$1",
             )
-                // Remove the last line for full changelog since its just a link
+                // Remove the last line for full changelog since it's just a link
                 .replace(Regex("\\*\\*Full Changelog\\*\\*.*"), "")
 }
 
@@ -387,35 +385,39 @@ interface DownloadCallback {
 suspend fun copyTo(
     input: InputStream,
     out: OutputStream,
-    bufferSize: Int = 16 * 1024,
+    bufferSize: Int = 64 * 1024,
     callback: DownloadCallback,
-): Long {
-    var bytesCopied: Long = 0
-    val buffer = ByteArray(bufferSize)
-    var bytes = input.read(buffer)
-    while (bytes >= 0) {
-        out.write(buffer, 0, bytes)
-        bytesCopied += bytes
-        withContext(Dispatchers.Main) {
+): Long =
+    withContext(WholphinDispatchers.IO) {
+        var bytesCopied: Long = 0
+        val buffer = ByteArray(bufferSize)
+        var bytes = input.read(buffer)
+        while (bytes >= 0) {
+            out.write(buffer, 0, bytes)
+            bytesCopied += bytes
             callback.bytesDownloaded(bytesCopied)
+            bytes = input.read(buffer)
         }
-        bytes = input.read(buffer)
+        return@withContext bytesCopied
     }
-    return bytesCopied
-}
 
 fun getDownloadUrl(
     assets: JsonArray,
     debug: Boolean,
-    supportedAbis: List<String> = Build.SUPPORTED_ABIS.toList(),
+    supportedABIs: List<String> = Build.SUPPORTED_ABIS.toList(),
 ): String? {
-    val abiSuffix = supportedAbis.firstOrNull().let { if (it != null) "-$it" else "" }
+    val abiSuffix = supportedABIs.firstOrNull().let { if (it != null) "-$it" else "" }
     val releaseSuffix = if (debug) "-debug" else "-release"
     val preferredNames =
         buildList {
             add("$ASSET_NAME${releaseSuffix}$abiSuffix.apk")
             add("$ASSET_NAME$releaseSuffix.apk")
-            if (!debug) add("$ASSET_NAME.apk")
+            if (!debug) {
+                if (abiSuffix.isNotNullOrBlank()) {
+                    add("$ASSET_NAME$abiSuffix.apk")
+                }
+                add("$ASSET_NAME.apk")
+            }
         }
     var preferredAsset: JsonObject? = null
     outer@ for (name in preferredNames) {

@@ -18,7 +18,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,16 +49,17 @@ import com.github.damontecres.wholphin.services.BackdropService
 import com.github.damontecres.wholphin.services.FavoriteWatchManager
 import com.github.damontecres.wholphin.services.ImageUrlService
 import com.github.damontecres.wholphin.services.MediaManagementService
-import com.github.damontecres.wholphin.services.MediaReportService
 import com.github.damontecres.wholphin.services.MusicService
 import com.github.damontecres.wholphin.services.NavigationManager
+import com.github.damontecres.wholphin.services.ServerReportService
 import com.github.damontecres.wholphin.services.UserPreferencesService
 import com.github.damontecres.wholphin.ui.AspectRatios
-import com.github.damontecres.wholphin.ui.DefaultItemFields
+import com.github.damontecres.wholphin.ui.ItemRowFields
 import com.github.damontecres.wholphin.ui.SlimItemFields
 import com.github.damontecres.wholphin.ui.cards.BannerCardWithTitle
 import com.github.damontecres.wholphin.ui.cards.ItemRow
 import com.github.damontecres.wholphin.ui.components.ContextMenu
+import com.github.damontecres.wholphin.ui.components.ContextMenuActions
 import com.github.damontecres.wholphin.ui.components.ContextMenuDialog
 import com.github.damontecres.wholphin.ui.components.ErrorMessage
 import com.github.damontecres.wholphin.ui.components.GenreText
@@ -71,7 +71,6 @@ import com.github.damontecres.wholphin.ui.components.QuickDetails
 import com.github.damontecres.wholphin.ui.data.AddPlaylistViewModel
 import com.github.damontecres.wholphin.ui.data.RowColumn
 import com.github.damontecres.wholphin.ui.detail.PlaylistDialog
-import com.github.damontecres.wholphin.ui.detail.PlaylistLoadingState
 import com.github.damontecres.wholphin.ui.ifElse
 import com.github.damontecres.wholphin.ui.launchDefault
 import com.github.damontecres.wholphin.ui.launchIO
@@ -83,15 +82,16 @@ import com.github.damontecres.wholphin.util.ApiRequestPager
 import com.github.damontecres.wholphin.util.ExceptionHandler
 import com.github.damontecres.wholphin.util.GetItemsRequestHandler
 import com.github.damontecres.wholphin.util.LoadingState
+import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.jellyfin.sdk.api.client.ApiClient
@@ -100,7 +100,6 @@ import org.jellyfin.sdk.api.client.extensions.userLibraryApi
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.ItemSortBy
-import org.jellyfin.sdk.model.api.MediaType
 import org.jellyfin.sdk.model.api.SortOrder
 import org.jellyfin.sdk.model.api.request.GetItemsRequest
 import org.jellyfin.sdk.model.api.request.GetSimilarItemsRequest
@@ -116,7 +115,7 @@ class ArtistViewModel
         navigationManager: NavigationManager,
         mediaManagementService: MediaManagementService,
         val serverRepository: ServerRepository,
-        val mediaReportService: MediaReportService,
+        val serverReportService: ServerReportService,
         private val favoriteWatchManager: FavoriteWatchManager,
         private val userPreferencesService: UserPreferencesService,
         private val backdropService: BackdropService,
@@ -135,6 +134,11 @@ class ArtistViewModel
 
         init {
             init()
+            viewModelScope.launchDefault {
+                mediaManagementService.collectCanDelete(state.map { it.artist }) { canDelete ->
+                    _state.update { it.copy(canDelete = canDelete) }
+                }
+            }
         }
 
         override fun init() {
@@ -151,8 +155,9 @@ class ArtistViewModel
                         async {
                             val request =
                                 GetItemsRequest(
-                                    parentId = itemId,
-                                    fields = DefaultItemFields,
+                                    albumArtistIds = listOf(itemId),
+                                    recursive = true,
+                                    fields = SlimItemFields,
                                     includeItemTypes = listOf(BaseItemKind.MUSIC_ALBUM),
                                     sortBy =
                                         listOf(
@@ -163,14 +168,38 @@ class ArtistViewModel
                                 )
                             ApiRequestPager(api, request, GetItemsRequestHandler, viewModelScope).init()
                         }
+                    val appearsOnDeferred =
+                        async {
+                            val request =
+                                GetItemsRequest(
+                                    contributingArtistIds = listOf(itemId),
+                                    recursive = true,
+                                    fields = SlimItemFields,
+                                    includeItemTypes = listOf(BaseItemKind.MUSIC_ALBUM),
+                                    sortBy =
+                                        listOf(
+                                            ItemSortBy.PREMIERE_DATE,
+                                            ItemSortBy.SORT_NAME,
+                                        ),
+                                    sortOrder = listOf(SortOrder.DESCENDING, SortOrder.ASCENDING),
+                                )
+                            ApiRequestPager(
+                                api,
+                                request,
+                                GetItemsRequestHandler,
+                                viewModelScope,
+                            ).init()
+                        }
                     val artist = itemDeferred.await()
                     val albums = albumsDeferred.await()
+                    val appearsOn = appearsOnDeferred.await()
                     val imageUrl = imageUrlService.getItemImageUrl(artist, ImageType.PRIMARY)
                     _state.update {
                         it.copy(
                             artist = artist,
                             imageUrl = imageUrl,
                             albums = albums,
+                            appearsOnAlbums = appearsOn,
                             loading = LoadingState.Success,
                         )
                     }
@@ -179,7 +208,7 @@ class ArtistViewModel
                         val request =
                             GetItemsRequest(
                                 artistIds = listOf(itemId),
-                                fields = DefaultItemFields,
+                                fields = SlimItemFields,
                                 recursive = true,
                                 includeItemTypes = listOf(BaseItemKind.AUDIO),
                                 minCommunityRating = 1.0,
@@ -204,7 +233,7 @@ class ArtistViewModel
                                 api.libraryApi
                                     .getSimilarItems(
                                         GetSimilarItemsRequest(
-                                            userId = serverRepository.currentUser.value?.id,
+                                            userId = serverRepository.currentUser?.id,
                                             itemId = itemId,
                                             excludeArtistIds = listOf(itemId),
                                             fields = SlimItemFields,
@@ -215,24 +244,7 @@ class ArtistViewModel
                             _state.update { it.copy(similar = similar) }
                         }
                     }
-                    viewModelScope.launchIO {
-                        val request =
-                            GetItemsRequest(
-                                userId = serverRepository.currentUser.value?.id,
-                                artistIds = listOf(itemId),
-                                parentId = null,
-                                fields = DefaultItemFields,
-                                recursive = true,
-                                includeItemTypes = listOf(BaseItemKind.MUSIC_VIDEO),
-                            )
-                        val musicVideos =
-                            GetItemsRequestHandler.execute(api, request).toBaseItems(api, false)
-                        if (musicVideos.isNotEmpty()) {
-                            _state.update {
-                                it.copy(musicVideos = musicVideos)
-                            }
-                        }
-                    }
+                    updateMusicVideos()
                 } catch (ex: Exception) {
                     _state.update { it.copy(loading = LoadingState.Error(ex)) }
                 }
@@ -247,17 +259,52 @@ class ArtistViewModel
             }
         }
 
+        private fun updateMusicVideos() {
+            viewModelScope.launchIO {
+                val request =
+                    GetItemsRequest(
+                        userId = serverRepository.currentUser?.id,
+                        artistIds = listOf(itemId),
+                        parentId = null,
+                        fields = ItemRowFields,
+                        recursive = true,
+                        includeItemTypes = listOf(BaseItemKind.MUSIC_VIDEO),
+                    )
+                val musicVideos =
+                    GetItemsRequestHandler.execute(api, request).toBaseItems(api, false)
+                if (musicVideos.isNotEmpty()) {
+                    _state.update {
+                        it.copy(musicVideos = musicVideos)
+                    }
+                }
+            }
+        }
+
         fun setFavorite(
             itemId: UUID,
             favorite: Boolean,
-        ) = viewModelScope.launch(ExceptionHandler() + Dispatchers.IO) {
+        ) = viewModelScope.launch(ExceptionHandler() + WholphinDispatchers.IO) {
             favoriteWatchManager.setFavorite(itemId, favorite)
-            val artist =
-                api.userLibraryApi
-                    .getItem(itemId = itemId)
-                    .content
-                    .let { BaseItem(it, false) }
-            _state.update { it.copy(artist = artist) }
+            // Refresh if artist, otherwise only could be a music video
+            if (itemId == this@ArtistViewModel.itemId) {
+                val artist =
+                    api.userLibraryApi
+                        .getItem(itemId = itemId)
+                        .content
+                        .let { BaseItem(it, false) }
+                _state.update { it.copy(artist = artist) }
+            } else {
+                updateMusicVideos()
+            }
+        }
+
+        fun setWatched(
+            itemId: UUID,
+            played: Boolean,
+        ) = viewModelScope.launch(ExceptionHandler() + WholphinDispatchers.IO) {
+            favoriteWatchManager.setWatched(itemId, played)
+            // Only applies to music videos
+            updateMusicVideos()
         }
     }
 
@@ -266,9 +313,11 @@ data class ArtistState(
     val imageUrl: String?,
     val topSongs: List<BaseItem?>,
     val albums: List<BaseItem?>,
+    val appearsOnAlbums: List<BaseItem?>,
     val similar: List<BaseItem>,
     val loading: LoadingState,
     val musicVideos: List<BaseItem?>,
+    val canDelete: Boolean,
 ) {
     companion object {
         val EMPTY =
@@ -278,8 +327,10 @@ data class ArtistState(
                 emptyList(),
                 emptyList(),
                 emptyList(),
+                emptyList(),
                 LoadingState.Pending,
                 emptyList(),
+                false,
             )
     }
 }
@@ -287,7 +338,8 @@ data class ArtistState(
 private const val HEADER_ROW = 0
 private const val SONG_ROW = HEADER_ROW + 1
 private const val ALBUM_ROW = SONG_ROW + 1
-private const val MUSIC_VIDEO_ROW = ALBUM_ROW + 1
+private const val APPEARS_ON_ROW = SONG_ROW + 1
+private const val MUSIC_VIDEO_ROW = APPEARS_ON_ROW + 1
 private const val SIMILAR_ROW = MUSIC_VIDEO_ROW + 1
 
 @Composable
@@ -311,7 +363,7 @@ fun ArtistDetailsPage(
         remember { List(SIMILAR_ROW + 1) { FocusRequester() } }
 
     var showPlaylistDialog by remember { mutableStateOf<Optional<UUID>>(Optional.absent()) }
-    val playlistState by playlistViewModel.playlistState.observeAsState(PlaylistLoadingState.Pending)
+    val playlistState by playlistViewModel.playlistState.collectAsState()
     var showContextMenu by remember { mutableStateOf<ContextMenu?>(null) }
     val moreDialogActions =
         remember {
@@ -322,7 +374,7 @@ fun ArtistDetailsPage(
                 onClickAddToQueue = { item -> viewModel.addToQueue(item, -1) },
                 onClickFavorite = { itemId, favorite -> viewModel.setFavorite(itemId, favorite) },
                 onClickAddPlaylist = { itemId ->
-                    playlistViewModel.loadPlaylists(MediaType.AUDIO)
+                    playlistViewModel.loadPlaylists()
                     showPlaylistDialog.makePresent(itemId)
                 },
                 onClickRemoveFromQueue = { _, _ -> },
@@ -378,6 +430,7 @@ fun ArtistDetailsPage(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             MusicExpandableButtons(
+                                title = artist.title ?: "",
                                 actions =
                                     remember {
                                         MusicButtonActions(
@@ -406,9 +459,11 @@ fun ArtistDetailsPage(
                                                         actions = moreDialogActions,
                                                     )
                                             },
+                                            onConfirmDelete = { viewModel.deleteItem(artist) },
                                         )
                                     },
                                 favorite = artist.favorite,
+                                canDelete = state.canDelete,
                                 buttonOnFocusChanged = {
                                     if (it.isFocused) {
                                         position = RowColumn(HEADER_ROW, 0)
@@ -491,41 +546,83 @@ fun ArtistDetailsPage(
                             }
                         }
                     }
-                    item {
-                        ItemRow(
-                            title = stringResource(R.string.albums),
-                            items = state.albums,
-                            onClickItem = { index, album ->
-                                position = RowColumn(ALBUM_ROW, index)
-                                viewModel.navigationManager.navigateTo(album.destination())
-                            },
-                            onLongClickItem = { index, album ->
-                                showContextMenu =
-                                    ContextMenu.ForMusic(
-                                        fromLongClick = true,
+                    if (state.albums.isNotEmpty()) {
+                        item {
+                            ItemRow(
+                                title = stringResource(R.string.albums),
+                                items = state.albums,
+                                onClickItem = { index, album ->
+                                    position = RowColumn(ALBUM_ROW, index)
+                                    viewModel.navigationManager.navigateTo(album.destination())
+                                },
+                                onLongClickItem = { index, album ->
+                                    showContextMenu =
+                                        ContextMenu.ForMusic(
+                                            fromLongClick = true,
+                                            item = album,
+                                            index = index,
+                                            canDelete =
+                                                viewModel.canDelete(
+                                                    album,
+                                                    preferences.appPreferences,
+                                                ),
+                                            canRemoveFromQueue = false,
+                                            actions = moreDialogActions,
+                                            showGoTo = true,
+                                        )
+                                },
+                                cardContent = { index: Int, album: BaseItem?, mod: Modifier, onClick: () -> Unit, onLongClick: () -> Unit ->
+                                    BannerCardWithTitle(
+                                        title = album?.name,
+                                        subtitle = album?.data?.productionYear?.toString(),
                                         item = album,
-                                        index = index,
-                                        canDelete =
-                                            viewModel.canDelete(
-                                                album,
-                                                preferences.appPreferences,
-                                            ),
-                                        canRemoveFromQueue = false,
-                                        actions = moreDialogActions,
+                                        onClick = onClick,
+                                        onLongClick = onLongClick,
+                                        aspectRatio = AspectRatios.SQUARE,
                                     )
-                            },
-                            cardContent = { index: Int, album: BaseItem?, mod: Modifier, onClick: () -> Unit, onLongClick: () -> Unit ->
-                                BannerCardWithTitle(
-                                    title = album?.name,
-                                    subtitle = album?.data?.productionYear?.toString(),
-                                    item = album,
-                                    onClick = onClick,
-                                    onLongClick = onLongClick,
-                                    aspectRatio = AspectRatios.SQUARE,
-                                )
-                            },
-                            modifier = Modifier.focusRequester(focusRequesters[ALBUM_ROW]),
-                        )
+                                },
+                                modifier = Modifier.focusRequester(focusRequesters[ALBUM_ROW]),
+                            )
+                        }
+                    }
+                    if (state.appearsOnAlbums.isNotEmpty()) {
+                        item {
+                            ItemRow(
+                                title = stringResource(R.string.appears_on),
+                                items = state.appearsOnAlbums,
+                                onClickItem = { index, album ->
+                                    position = RowColumn(APPEARS_ON_ROW, index)
+                                    viewModel.navigationManager.navigateTo(album.destination())
+                                },
+                                onLongClickItem = { index, album ->
+                                    showContextMenu =
+                                        ContextMenu.ForMusic(
+                                            fromLongClick = true,
+                                            item = album,
+                                            index = index,
+                                            canDelete =
+                                                viewModel.canDelete(
+                                                    album,
+                                                    preferences.appPreferences,
+                                                ),
+                                            canRemoveFromQueue = false,
+                                            actions = moreDialogActions,
+                                            showGoTo = true,
+                                        )
+                                },
+                                cardContent = { index: Int, album: BaseItem?, mod: Modifier, onClick: () -> Unit, onLongClick: () -> Unit ->
+                                    BannerCardWithTitle(
+                                        title = album?.name,
+                                        subtitle = album?.data?.productionYear?.toString(),
+                                        item = album,
+                                        onClick = onClick,
+                                        onLongClick = onLongClick,
+                                        aspectRatio = AspectRatios.SQUARE,
+                                    )
+                                },
+                                modifier = Modifier.focusRequester(focusRequesters[ALBUM_ROW]),
+                            )
+                        }
                     }
                     if (state.musicVideos.isNotEmpty()) {
                         item {
@@ -537,7 +634,37 @@ fun ArtistDetailsPage(
                                     viewModel.navigationManager.navigateTo(item.destination())
                                 },
                                 onLongClickItem = { index, item ->
-                                    // TODO
+                                    showContextMenu =
+                                        ContextMenu.ForBaseItem(
+                                            fromLongClick = true,
+                                            item = item,
+                                            chosenStreams = null,
+                                            showGoTo = true,
+                                            showStreamChoices = false,
+                                            canDelete =
+                                                viewModel.canDelete(
+                                                    item,
+                                                    preferences.appPreferences,
+                                                ),
+                                            canRemoveContinueWatching = false,
+                                            canRemoveNextUp = false,
+                                            actions =
+                                                ContextMenuActions(
+                                                    navigateTo = viewModel.navigationManager::navigateTo,
+                                                    onShowOverview = {},
+                                                    onClickWatch = viewModel::setWatched,
+                                                    onClickFavorite = viewModel::setFavorite,
+                                                    onClickAddPlaylist = { itemId ->
+                                                        playlistViewModel.loadPlaylists()
+                                                        showPlaylistDialog.makePresent(itemId)
+                                                    },
+                                                    onSendMediaInfo = viewModel.serverReportService::sendMediaReportFor,
+                                                    onDeleteItem = viewModel::deleteItem,
+                                                    onChooseVersion = { _, _ -> },
+                                                    onChooseTracks = { },
+                                                    onClearChosenStreams = {},
+                                                ),
+                                        )
                                 },
                                 cardContent = { index: Int, item: BaseItem?, mod: Modifier, onClick: () -> Unit, onLongClick: () -> Unit ->
                                     BannerCardWithTitle(
@@ -546,7 +673,7 @@ fun ArtistDetailsPage(
                                         item = item,
                                         onClick = onClick,
                                         onLongClick = onLongClick,
-                                        aspectRatio = AspectRatios.WIDE,
+                                        aspectRatio = item?.aspectRatio ?: AspectRatios.WIDE,
                                         played = item?.played ?: false,
                                         playPercent = item?.data?.userData?.playedPercentage ?: 0.0,
                                         favorite = item?.favorite ?: false,
@@ -579,6 +706,7 @@ fun ArtistDetailsPage(
                                                 ),
                                             canRemoveFromQueue = false,
                                             actions = moreDialogActions,
+                                            showGoTo = true,
                                         )
                                 },
                                 cardContent = { index: Int, item: BaseItem?, mod: Modifier, onClick: () -> Unit, onLongClick: () -> Unit ->
@@ -622,6 +750,7 @@ fun ArtistDetailsPage(
                 playlistViewModel.createPlaylistAndAddItem(it, itemId)
                 showPlaylistDialog.makeAbsent()
             },
+            onSearch = playlistViewModel::loadPlaylists,
             elevation = 3.dp,
         )
     }

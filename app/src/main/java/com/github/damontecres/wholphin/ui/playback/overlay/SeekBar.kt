@@ -18,7 +18,6 @@ package com.github.damontecres.wholphin.ui.playback.overlay
  * limitations under the License.
  */
 
-import android.view.KeyEvent
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.focusable
@@ -48,7 +47,10 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import com.github.damontecres.wholphin.ui.playback.ControllerViewState
 import com.github.damontecres.wholphin.ui.playback.calculateSeekAccelerationMultiplier
+import com.github.damontecres.wholphin.ui.playback.isDpadLeft
+import com.github.damontecres.wholphin.ui.playback.isDpadRight
 import kotlinx.coroutines.FlowPreview
+import timber.log.Timber
 import kotlin.time.Duration
 
 /**
@@ -100,6 +102,30 @@ fun SteppedSeekBarImpl(
             seek(seekProgress)
         },
         interactionSource = interactionSource,
+        modifier = modifier,
+    )
+}
+
+/**
+ * A read-only seek bar for showing progress without taking focus or handling D-Pad input.
+ *
+ * This is used by overlays where seeking is handled elsewhere and the bar is only a visual indicator.
+ */
+@Composable
+fun StaticSeekBarImpl(
+    progress: Float,
+    durationMs: Long,
+    bufferedProgress: Float,
+    modifier: Modifier = Modifier,
+) {
+    SeekBarDisplay(
+        enabled = false,
+        progress = progress,
+        bufferedProgress = bufferedProgress,
+        durationMs = durationMs,
+        onLeft = {},
+        onRight = {},
+        interactionSource = remember { MutableInteractionSource() },
         modifier = modifier,
     )
 }
@@ -192,70 +218,69 @@ private fun SeekBarDisplay(
                     .height(animatedIndicatorHeight)
                     .padding(horizontal = 4.dp)
                     .onPreviewKeyEvent { event ->
-                        when (event.nativeKeyEvent.keyCode) {
-                            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT -> {
-                                when (event.type) {
-                                    KeyEventType.KeyDown -> {
-                                        val repeatCount = event.nativeKeyEvent.repeatCount
-                                        if (repeatCount > 0) {
-                                            leftHandledByRepeat = true
-                                            onLeft.invoke(
-                                                calculateSeekAccelerationMultiplier(
-                                                    repeatCount = repeatCount,
-                                                    durationMs = durationMs,
-                                                ),
-                                            )
-                                        } else {
-                                            leftHandledByRepeat = false
-                                        }
-                                    }
-
-                                    KeyEventType.KeyUp -> {
-                                        if (!leftHandledByRepeat) {
-                                            onLeft.invoke(1)
-                                        }
+                        if (!isDpadLeft(event) && !isDpadRight(event)) {
+                            Timber.v("Ignoring %s", event)
+                            return@onPreviewKeyEvent false
+                        }
+                        if (isDpadLeft(event)) {
+                            when (event.type) {
+                                KeyEventType.KeyDown -> {
+                                    val repeatCount = event.nativeKeyEvent.repeatCount
+                                    if (repeatCount > 0) {
+                                        leftHandledByRepeat = true
+                                        onLeft.invoke(
+                                            calculateSeekAccelerationMultiplier(
+                                                repeatCount = repeatCount,
+                                                durationMs = durationMs,
+                                            ),
+                                        )
+                                    } else {
                                         leftHandledByRepeat = false
                                     }
-
-                                    else -> {
-                                        return@onPreviewKeyEvent false
-                                    }
                                 }
-                                return@onPreviewKeyEvent true
-                            }
 
-                            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT -> {
-                                when (event.type) {
-                                    KeyEventType.KeyDown -> {
-                                        val repeatCount = event.nativeKeyEvent.repeatCount
-                                        if (repeatCount > 0) {
-                                            rightHandledByRepeat = true
-                                            onRight.invoke(
-                                                calculateSeekAccelerationMultiplier(
-                                                    repeatCount = repeatCount,
-                                                    durationMs = durationMs,
-                                                ),
-                                            )
-                                        } else {
-                                            rightHandledByRepeat = false
-                                        }
+                                KeyEventType.KeyUp -> {
+                                    if (!leftHandledByRepeat) {
+                                        onLeft.invoke(1)
                                     }
+                                    leftHandledByRepeat = false
+                                }
 
-                                    KeyEventType.KeyUp -> {
-                                        if (!rightHandledByRepeat) {
-                                            onRight.invoke(1)
-                                        }
+                                else -> {
+                                    return@onPreviewKeyEvent false
+                                }
+                            }
+                            return@onPreviewKeyEvent true
+                        } else {
+                            when (event.type) {
+                                KeyEventType.KeyDown -> {
+                                    val repeatCount = event.nativeKeyEvent.repeatCount
+                                    if (repeatCount > 0) {
+                                        rightHandledByRepeat = true
+                                        onRight.invoke(
+                                            calculateSeekAccelerationMultiplier(
+                                                repeatCount = repeatCount,
+                                                durationMs = durationMs,
+                                            ),
+                                        )
+                                    } else {
                                         rightHandledByRepeat = false
                                     }
-
-                                    else -> {
-                                        return@onPreviewKeyEvent false
-                                    }
                                 }
-                                return@onPreviewKeyEvent true
+
+                                KeyEventType.KeyUp -> {
+                                    if (!rightHandledByRepeat) {
+                                        onRight.invoke(1)
+                                    }
+                                    rightHandledByRepeat = false
+                                }
+
+                                else -> {
+                                    return@onPreviewKeyEvent false
+                                }
                             }
+                            return@onPreviewKeyEvent true
                         }
-                        false
                     }.focusable(enabled = enabled, interactionSource = interactionSource),
             onDraw = {
                 val yOffset = size.height.div(2)
@@ -282,7 +307,6 @@ private fun SeekBarDisplay(
                     start = Offset(x = 0f, y = yOffset),
                     end =
                         Offset(
-//                        x = size.width.times(if (isSelected) seekProgress else progress),
                             x = size.width.times(progress),
                             y = yOffset,
                         ),
@@ -292,7 +316,11 @@ private fun SeekBarDisplay(
                 drawCircle(
                     color = Color.White,
                     radius = size.height + 2,
-                    center = Offset(x = size.width.times(progress), y = yOffset),
+                    center =
+                        Offset(
+                            x = size.width.times(progress),
+                            y = yOffset,
+                        ),
                 )
             },
         )

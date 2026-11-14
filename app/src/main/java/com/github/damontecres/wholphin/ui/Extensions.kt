@@ -27,16 +27,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.MutableLiveData
 import androidx.media3.common.Player
 import coil3.request.ErrorResult
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.ui.data.RowColumn
 import com.github.damontecres.wholphin.ui.data.RowColumnSaver
 import com.github.damontecres.wholphin.util.ExceptionHandler
+import com.github.damontecres.wholphin.util.WholphinDispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
@@ -74,6 +73,8 @@ inline fun <T> List<T>.indexOfFirstOrNull(predicate: (T) -> Boolean): Int? {
     val index = this.indexOfFirst(predicate)
     return if (index >= 0) index else null
 }
+
+fun Iterable<CharSequence?>.joinNotBlank(sep: String): String? = filter { it.isNotNullOrBlank() }.letNotEmpty { it.joinToString(sep) }
 
 /**
  * Try to call [FocusRequester.requestFocus], but catch & log the exception if something is not configured properly
@@ -243,7 +244,7 @@ val BaseItemDto.timeRemaining: Duration?
     get() =
         userData?.playbackPositionTicks?.let {
             if (it > 0) {
-                runTimeTicks?.minus(it)?.ticks
+                runTimeTicks?.minus(it)?.ticks?.takeIf { it > Duration.ZERO }
             } else {
                 null
             }
@@ -360,34 +361,34 @@ suspend fun showToast(
     context: Context,
     text: CharSequence,
     duration: Int,
-) = withContext(Dispatchers.Main) {
+) = withContext(WholphinDispatchers.Main) {
     Toast.makeText(context, text, duration).show()
 }
 
 suspend fun showToast(
     context: Context,
     text: CharSequence,
-) = withContext(Dispatchers.Main) {
+) = withContext(WholphinDispatchers.Main) {
     Toast.makeText(context, text, Toast.LENGTH_LONG).show()
 }
 
 /**
- * Launches a coroutine with [Dispatchers.IO] plus the provided [CoroutineContext] defaulting to using [ExceptionHandler]
+ * Launches a coroutine with [WholphinDispatchers.IO] plus the provided [CoroutineContext] defaulting to using [ExceptionHandler]
  */
 fun CoroutineScope.launchIO(
     context: CoroutineContext = ExceptionHandler(),
     start: CoroutineStart = CoroutineStart.DEFAULT,
     block: suspend CoroutineScope.() -> Unit,
-): Job = launch(context = Dispatchers.IO + context, start = start, block = block)
+): Job = launch(context = WholphinDispatchers.IO + context, start = start, block = block)
 
 /**
- * Launches a coroutine with [Dispatchers.Default] plus the provided [CoroutineContext] defaulting to using [ExceptionHandler]
+ * Launches a coroutine with [WholphinDispatchers.Default] plus the provided [CoroutineContext] defaulting to using [ExceptionHandler]
  */
 fun CoroutineScope.launchDefault(
     context: CoroutineContext = ExceptionHandler(),
     start: CoroutineStart = CoroutineStart.DEFAULT,
     block: suspend CoroutineScope.() -> Unit,
-): Job = launch(context = Dispatchers.Default + context, start = start, block = block)
+): Job = launch(context = WholphinDispatchers.Default + context, start = start, block = block)
 
 /**
  * Converts a UUID to the format used server-side (ie without hyphens).
@@ -396,11 +397,6 @@ fun CoroutineScope.launchDefault(
  *
  */
 fun UUID.toServerString() = this.toString().replace("-", "")
-
-suspend fun <T> MutableLiveData<T>.setValueOnMain(value: T) =
-    withContext(Dispatchers.Main) {
-        this@setValueOnMain.value = value
-    }
 
 fun equalsNotNull(
     a: Any?,
@@ -416,7 +412,7 @@ fun logTab(
     ACRA.errorReporter.putCustomData("tabInfo", info)
 }
 
-suspend fun <T> onMain(block: suspend CoroutineScope.() -> T) = withContext(Dispatchers.Main, block)
+suspend fun <T> onMain(block: suspend CoroutineScope.() -> T) = withContext(WholphinDispatchers.Main, block)
 
 fun Modifier.dimAndBlur(enabled: Boolean) =
     this.ifElse(
@@ -430,6 +426,9 @@ fun Response<BaseItemDtoQueryResult>.toBaseItems(
     api: ApiClient,
     useSeriesForPrimary: Boolean,
 ) = this.content.items.map { BaseItem.from(it, api, useSeriesForPrimary) }
+
+fun Response<BaseItemDtoQueryResult>.toBaseItems(useSeriesForPrimary: Boolean = false) =
+    this.content.items.map { BaseItem(it, useSeriesForPrimary = useSeriesForPrimary) }
 
 /**
  * Check if this, coalescing nulls to zero, is greater than that
@@ -452,3 +451,15 @@ fun <T> Flow<T>.collectLatestIn(
  * Easy way to combine two flows into a [Pair]
  */
 fun <T1, T2> Flow<T1>.combinePair(flow: Flow<T2>): Flow<Pair<T1, T2>> = combine(flow) { t1, t2 -> Pair(t1, t2) }
+
+/**
+ * Easy way to combine three flows into a [Triple]
+ */
+fun <T1, T2, T3> Flow<T1>.combineTriple(
+    flow: Flow<T2>,
+    flow2: Flow<T3>,
+): Flow<Triple<T1, T2, T3>> =
+    combine(flow) { t1, t2 -> Pair(t1, t2) }
+        .combine(flow2) { (t1, t2), t3 ->
+            Triple(t1, t2, t3)
+        }

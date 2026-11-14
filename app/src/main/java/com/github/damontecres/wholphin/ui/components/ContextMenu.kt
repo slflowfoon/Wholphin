@@ -1,6 +1,6 @@
 package com.github.damontecres.wholphin.ui.components
 
-import android.content.Context
+import android.content.res.Resources
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
@@ -15,7 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.github.damontecres.wholphin.R
@@ -28,6 +28,7 @@ import com.github.damontecres.wholphin.preferences.PlayerBackend
 import com.github.damontecres.wholphin.ui.letNotEmpty
 import com.github.damontecres.wholphin.ui.nav.Destination
 import com.github.damontecres.wholphin.util.supportedPlayableTypes
+import com.github.damontecres.wholphin.util.supportedShufflableTypes
 import org.jellyfin.sdk.model.UUID
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
@@ -40,6 +41,7 @@ sealed interface ContextMenu {
     data class ForBaseItem(
         val fromLongClick: Boolean,
         val item: BaseItem,
+        val index: Int = UNSPECIFIED_INDEX,
         val chosenStreams: ChosenStreams?,
         val showGoTo: Boolean,
         val showStreamChoices: Boolean,
@@ -47,6 +49,7 @@ sealed interface ContextMenu {
         val canRemoveContinueWatching: Boolean,
         val canRemoveNextUp: Boolean,
         val actions: ContextMenuActions,
+        val showRemoveFromPlaylist: Boolean = false,
     ) : ContextMenu
 
     data class ForPerson(
@@ -62,6 +65,8 @@ sealed interface ContextMenu {
         val canDelete: Boolean,
         val canRemoveFromQueue: Boolean,
         val actions: MusicContextActions,
+        val showRemoveFromPlaylist: Boolean = false,
+        val showGoTo: Boolean = false,
     ) : ContextMenu
 
     data class ForQueue(
@@ -70,6 +75,10 @@ sealed interface ContextMenu {
         val index: Int,
         val actions: QueueContextActions,
     ) : ContextMenu
+
+    companion object {
+        const val UNSPECIFIED_INDEX = -12
+    }
 }
 
 data class ContextMenuActions(
@@ -86,6 +95,7 @@ data class ContextMenuActions(
     val onClickGoTo: (BaseItem) -> Unit = { navigateTo(it.destination()) },
     val onClickRemoveFromNextUp: (BaseItem) -> Unit = {},
     val onClickAddToQueue: (BaseItem) -> Unit = {},
+    val onRemoveFromPlaylist: (Int, UUID) -> Unit = { _, _ -> },
 )
 
 data class PersonContextActions(
@@ -108,6 +118,7 @@ data class MusicContextActions(
     val onClickGoToArtist: (UUID) -> Unit = {
         navigateTo.invoke(Destination.MediaItem(itemId = it, type = BaseItemKind.MUSIC_ARTIST))
     },
+    val onRemoveFromPlaylist: (Int, UUID) -> Unit = { _, _ -> },
 )
 
 data class QueueContextActions(
@@ -184,31 +195,32 @@ fun ContextMenu(
 ) {
     val item = contextMenu.item
     val chosenStreams = contextMenu.chosenStreams
-    val context = LocalContext.current
+    val resources = LocalResources.current
     var chooseVersion by remember { mutableStateOf<DialogParams?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showPlayWithDialog by remember { mutableStateOf(false) }
 
     val dialogItems =
-        remember(context, item, chosenStreams) {
+        remember(resources, item, chosenStreams) {
             buildContextMenuItems(
-                context = context,
+                resources = resources,
                 item = item,
                 watched = item.played,
                 favorite = item.favorite,
                 seriesId = item.data.seriesId,
                 sourceId = chosenStreams?.source?.id?.toUUIDOrNull(),
-                canClearChosenStreams = chosenStreams.let { it?.itemPlayback != null || it?.plc != null },
-                showGoTo = contextMenu.showGoTo,
-                showStreamChoices = contextMenu.showStreamChoices,
-                canDelete = contextMenu.canDelete,
-                canRemoveContinueWatching = contextMenu.canRemoveContinueWatching,
-                canRemoveNextUp = contextMenu.canRemoveNextUp,
+                canClearChosenStreams =
+                    chosenStreams.let {
+                        it?.itemPlayback != null ||
+                            it?.audioStc?.isNotEmpty() == true ||
+                            it?.subtitleStc?.isNotEmpty() == true
+                    },
+                contextMenu = contextMenu,
                 actions = actions,
                 onChooseVersion = {
                     chooseVersion =
                         chooseVersionParams(
-                            context,
+                            resources,
                             item.data.mediaSources.orEmpty(),
                             chosenStreams?.source?.id?.toUUIDOrNull(),
                         ) { idx ->
@@ -225,14 +237,14 @@ fun ContextMenu(
                         )?.let { source ->
                             chooseVersion =
                                 chooseStream(
-                                    context = context,
+                                    resources = resources,
                                     streams = source.mediaStreams.orEmpty(),
                                     type = type,
-                                    currentIndex =
+                                    streamChoice =
                                         if (type == MediaStreamType.AUDIO) {
-                                            chosenStreams?.audioStream?.index
+                                            chosenStreams?.audioStream
                                         } else {
-                                            chosenStreams?.subtitleStream?.index
+                                            chosenStreams?.subtitleStream
                                         },
                                     onClick = { trackIndex ->
                                         actions.onChooseTracks.invoke(
@@ -274,6 +286,7 @@ fun ContextMenu(
                 onDismissRequest = { chooseVersion = null },
                 dismissOnClick = true,
                 waitToLoad = params.fromLongClick,
+                elevation = 3.dp,
             )
         }
     }
@@ -285,12 +298,13 @@ fun ContextMenu(
                 actions.onDeleteItem.invoke(item)
                 onDismissRequest.invoke()
             },
+            elevation = 3.dp,
         )
     }
     if (showPlayWithDialog) {
         val dialogItems =
             remember {
-                buildPlayWith(context) { transcode, backend ->
+                buildPlayWith(resources) { transcode, backend ->
                     onDismissRequest.invoke()
                     actions.navigateTo(
                         Destination.Playback(
@@ -315,18 +329,14 @@ fun ContextMenu(
 }
 
 private fun buildContextMenuItems(
-    context: Context,
+    resources: Resources,
+    contextMenu: ContextMenu.ForBaseItem,
     item: BaseItem,
     seriesId: UUID?,
     sourceId: UUID?,
     watched: Boolean,
     favorite: Boolean,
     canClearChosenStreams: Boolean,
-    showGoTo: Boolean,
-    showStreamChoices: Boolean,
-    canDelete: Boolean,
-    canRemoveContinueWatching: Boolean,
-    canRemoveNextUp: Boolean,
     actions: ContextMenuActions,
     onChooseVersion: () -> Unit,
     onChooseTracks: (MediaStreamType) -> Unit,
@@ -336,10 +346,11 @@ private fun buildContextMenuItems(
     onClickPlayWith: () -> Unit,
 ): List<DialogItem> =
     buildList {
-        if (showGoTo) {
+        // Songs should not show Go to
+        if (contextMenu.showGoTo && item.type != BaseItemKind.AUDIO) {
             add(
                 DialogItem(
-                    context.getString(R.string.go_to),
+                    resources.getString(R.string.go_to),
                     Icons.Default.ArrowForward,
                     dismissOnClick = true,
                 ) {
@@ -351,9 +362,8 @@ private fun buildContextMenuItems(
             if (item.playbackPosition > Duration.ZERO) {
                 add(
                     DialogItem(
-                        context.getString(R.string.resume),
+                        resources.getString(R.string.resume),
                         Icons.Default.PlayArrow,
-                        iconColor = Color.Green.copy(alpha = .8f),
                         dismissOnClick = true,
                     ) {
                         actions.navigateTo(
@@ -366,7 +376,7 @@ private fun buildContextMenuItems(
                 )
                 add(
                     DialogItem(
-                        context.getString(R.string.restart),
+                        resources.getString(R.string.restart),
                         Icons.Default.Refresh,
                         dismissOnClick = true,
                     ) {
@@ -381,9 +391,8 @@ private fun buildContextMenuItems(
             } else {
                 add(
                     DialogItem(
-                        context.getString(R.string.play),
+                        resources.getString(R.string.play),
                         Icons.Default.PlayArrow,
-                        iconColor = Color.Green.copy(alpha = .8f),
                         dismissOnClick = true,
                     ) {
                         actions.navigateTo(
@@ -396,7 +405,23 @@ private fun buildContextMenuItems(
                 )
             }
         }
-        if (showStreamChoices) {
+        if (item.type in supportedShufflableTypes) {
+            add(
+                DialogItem(
+                    resources.getString(R.string.shuffle),
+                    R.string.fa_shuffle,
+                    dismissOnClick = true,
+                ) {
+                    actions.navigateTo(
+                        Destination.PlaybackList(
+                            itemId = item.id,
+                            shuffle = true,
+                        ),
+                    )
+                },
+            )
+        }
+        if (contextMenu.showStreamChoices) {
             item.data.mediaSources?.letNotEmpty { sources ->
                 val source =
                     sourceId?.let { sources.firstOrNull { it.id?.toUUIDOrNull() == sourceId } }
@@ -407,9 +432,9 @@ private fun buildContextMenuItems(
                     if (audioCount > 1) {
                         add(
                             DialogItem(
-                                context.getString(
+                                resources.getString(
                                     R.string.choose_stream,
-                                    context.getString(R.string.audio),
+                                    resources.getString(R.string.audio),
                                 ),
                                 R.string.fa_volume_low,
                                 dismissOnClick = false,
@@ -421,9 +446,9 @@ private fun buildContextMenuItems(
                     if (subtitleCount > 0) {
                         add(
                             DialogItem(
-                                context.getString(
+                                resources.getString(
                                     R.string.choose_stream,
-                                    context.getString(R.string.subtitles),
+                                    resources.getString(R.string.subtitles),
                                 ),
                                 R.string.fa_closed_captioning,
                                 dismissOnClick = false,
@@ -436,9 +461,9 @@ private fun buildContextMenuItems(
                 if (sources.size > 1) {
                     add(
                         DialogItem(
-                            context.getString(
+                            resources.getString(
                                 R.string.choose_stream,
-                                context.getString(R.string.version),
+                                resources.getString(R.string.version),
                             ),
                             R.string.fa_file_video,
                             dismissOnClick = false,
@@ -449,14 +474,25 @@ private fun buildContextMenuItems(
                 }
             }
         }
-        if (item.type == BaseItemKind.MUSIC_ALBUM) {
+        if (item.type == BaseItemKind.MUSIC_ALBUM || item.type == BaseItemKind.AUDIO) {
             add(
                 DialogItem(
-                    context.getString(R.string.add_to_queue),
+                    resources.getString(R.string.add_to_queue),
                     Icons.Default.Add,
                     dismissOnClick = true,
                 ) {
                     actions.onClickAddToQueue(item)
+                },
+            )
+        }
+        if (contextMenu.showRemoveFromPlaylist) {
+            add(
+                DialogItem(
+                    text = R.string.remove_from_playlist,
+                    iconStringRes = R.string.fa_circle_xmark,
+                    dismissOnClick = true,
+                ) {
+                    actions.onRemoveFromPlaylist.invoke(contextMenu.index, item.id)
                 },
             )
         }
@@ -469,10 +505,10 @@ private fun buildContextMenuItems(
                 actions.onClickAddPlaylist.invoke(item.id)
             },
         )
-        if (canDelete) {
+        if (contextMenu.canDelete) {
             add(
                 DialogItem(
-                    context.getString(R.string.delete),
+                    resources.getString(R.string.delete),
                     Icons.Default.Delete,
                     iconColor = Color.Red.copy(alpha = .8f),
                     dismissOnClick = false,
@@ -481,7 +517,7 @@ private fun buildContextMenuItems(
                 },
             )
         }
-        if (canRemoveContinueWatching && !watched && item.playbackPosition > Duration.ZERO) {
+        if (contextMenu.canRemoveContinueWatching && !watched && item.playbackPosition > Duration.ZERO) {
             add(
                 DialogItem(
                     text = R.string.remove_continue_watching,
@@ -492,7 +528,7 @@ private fun buildContextMenuItems(
                 },
             )
         }
-        if (canRemoveNextUp && item.type == BaseItemKind.EPISODE && item.data.seriesId != null) {
+        if (contextMenu.canRemoveNextUp && item.type == BaseItemKind.EPISODE && item.data.seriesId != null) {
             add(
                 DialogItem(
                     text = R.string.remove_next_up,
@@ -525,7 +561,7 @@ private fun buildContextMenuItems(
         item.data.albumId?.let { albumId ->
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_album),
+                    resources.getString(R.string.go_to_album),
                     R.string.fa_compact_disc,
                     dismissOnClick = true,
                 ) {
@@ -542,7 +578,7 @@ private fun buildContextMenuItems(
         item.data.artistItems?.firstOrNull()?.id?.let { artistId ->
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_artist),
+                    resources.getString(R.string.go_to_artist),
                     R.string.fa_user,
                     dismissOnClick = true,
                 ) {
@@ -559,7 +595,7 @@ private fun buildContextMenuItems(
         seriesId?.let {
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_series),
+                    resources.getString(R.string.go_to_series),
                     Icons.AutoMirrored.Filled.ArrowForward,
                     dismissOnClick = true,
                 ) {
@@ -576,7 +612,7 @@ private fun buildContextMenuItems(
         if (item.data.mediaSources?.isNotEmpty() == true) {
             add(
                 DialogItem(
-                    context.getString(R.string.media_information),
+                    resources.getString(R.string.media_information),
                     Icons.Default.Info,
                     dismissOnClick = true,
                 ) {
@@ -584,10 +620,10 @@ private fun buildContextMenuItems(
                 },
             )
         }
-        if (showStreamChoices && canClearChosenStreams) {
+        if (contextMenu.showStreamChoices && canClearChosenStreams) {
             add(
                 DialogItem(
-                    context.getString(R.string.clear_track_choices),
+                    resources.getString(R.string.clear_track_choices),
                     Icons.Default.Delete,
                     dismissOnClick = true,
                 ) {
@@ -598,7 +634,7 @@ private fun buildContextMenuItems(
         if (item.type in supportedPlayableTypes) {
             add(
                 DialogItem(
-                    context.getString(R.string.play_with),
+                    resources.getString(R.string.play_with),
                     Icons.Default.PlayArrow,
                     dismissOnClick = false,
                     onClick = onClickPlayWith,
@@ -619,13 +655,13 @@ private fun buildContextMenuItems(
     }
 
 private fun buildPlayWith(
-    context: Context,
+    resources: Resources,
     onClick: (Boolean, PlayerBackend?) -> Unit,
 ) = buildList {
     val entries =
         PlayerBackend.entries
             .filterNot { it == PlayerBackend.UNRECOGNIZED }
-            .zip(context.resources.getStringArray(R.array.player_backend_options))
+            .zip(resources.getStringArray(R.array.player_backend_options))
             .filterNot { it.first == PlayerBackend.PREFER_MPV }
     entries.forEach { (backend, title) ->
         add(
@@ -639,7 +675,7 @@ private fun buildPlayWith(
     }
     add(
         DialogItem(
-            context.getString(R.string.transcoding),
+            resources.getString(R.string.transcoding),
             dismissOnClick = true,
         ) {
             onClick.invoke(true, null)
@@ -691,11 +727,11 @@ fun ContextMenu(
     item: ContextMenu.ForMusic,
     actions: MusicContextActions,
 ) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     var showDeleteDialog by remember { mutableStateOf(false) }
     val dialogItems =
-        remember(context, item, actions) {
-            buildContextForMusic(context, item, actions, onClickDelete = {
+        remember(resources, item, actions) {
+            buildContextForMusic(resources, item, actions, onClickDelete = {
                 showDeleteDialog = true
             })
         }
@@ -720,7 +756,7 @@ fun ContextMenu(
 }
 
 fun buildContextForMusic(
-    context: Context,
+    resources: Resources,
     music: ContextMenu.ForMusic,
     actions: MusicContextActions,
     onClickDelete: () -> Unit,
@@ -728,11 +764,22 @@ fun buildContextForMusic(
     buildList {
         val item = music.item
         val index = music.index
+        // Songs should not show Go to
+        if (music.showGoTo && item.type != BaseItemKind.AUDIO) {
+            add(
+                DialogItem(
+                    resources.getString(R.string.go_to),
+                    Icons.Default.ArrowForward,
+                    dismissOnClick = true,
+                ) {
+                    actions.navigateTo(item.destination())
+                },
+            )
+        }
         add(
             DialogItem(
-                context.getString(R.string.play),
+                resources.getString(R.string.play),
                 Icons.Default.PlayArrow,
-                iconColor = Color.Green.copy(alpha = .8f),
                 dismissOnClick = true,
             ) {
                 actions.onClickPlay(index, item)
@@ -740,9 +787,8 @@ fun buildContextForMusic(
         )
         add(
             DialogItem(
-                context.getString(R.string.play_next),
+                resources.getString(R.string.play_next),
                 Icons.Default.PlayArrow,
-                iconColor = Color.Green.copy(alpha = .8f),
                 dismissOnClick = true,
             ) {
                 actions.onClickPlayNext(index, item)
@@ -751,7 +797,7 @@ fun buildContextForMusic(
         if (music.canRemoveFromQueue) {
             add(
                 DialogItem(
-                    context.getString(R.string.remove_from_queue),
+                    resources.getString(R.string.remove_from_queue),
                     Icons.Default.Delete,
                     dismissOnClick = true,
                 ) {
@@ -761,11 +807,22 @@ fun buildContextForMusic(
         } else {
             add(
                 DialogItem(
-                    context.getString(R.string.add_to_queue),
+                    resources.getString(R.string.add_to_queue),
                     Icons.Default.Add,
                     dismissOnClick = true,
                 ) {
                     actions.onClickAddToQueue(item)
+                },
+            )
+        }
+        if (music.showRemoveFromPlaylist) {
+            add(
+                DialogItem(
+                    text = R.string.remove_from_playlist,
+                    iconStringRes = R.string.fa_circle_xmark,
+                    dismissOnClick = true,
+                ) {
+                    actions.onRemoveFromPlaylist.invoke(index, item.id)
                 },
             )
         }
@@ -781,7 +838,7 @@ fun buildContextForMusic(
         if (music.canDelete) {
             add(
                 DialogItem(
-                    context.getString(R.string.delete),
+                    resources.getString(R.string.delete),
                     Icons.Default.Delete,
                     iconColor = Color.Red.copy(alpha = .8f),
                     dismissOnClick = false,
@@ -803,7 +860,7 @@ fun buildContextForMusic(
         if (item.type == BaseItemKind.AUDIO && item.data.albumId != null) {
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_album),
+                    resources.getString(R.string.go_to_album),
                     R.string.fa_compact_disc,
                     dismissOnClick = true,
                 ) {
@@ -814,7 +871,7 @@ fun buildContextForMusic(
         if ((item.type == BaseItemKind.AUDIO || item.type == BaseItemKind.MUSIC_ALBUM) && item.data.artistItems?.isNotEmpty() == true) {
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_artist),
+                    resources.getString(R.string.go_to_artist),
                     R.string.fa_user,
                     dismissOnClick = true,
                 ) {
@@ -834,11 +891,11 @@ fun ContextMenu(
     item: ContextMenu.ForQueue,
     actions: QueueContextActions,
 ) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     val dialogItems =
-        remember(context, item, actions) {
+        remember(resources, item, actions) {
             buildContextForMusicQueue(
-                context,
+                resources,
                 item.item,
                 item.index,
                 actions,
@@ -855,7 +912,7 @@ fun ContextMenu(
 }
 
 fun buildContextForMusicQueue(
-    context: Context,
+    resources: Resources,
     item: AudioItem,
     index: Int,
     actions: QueueContextActions,
@@ -863,9 +920,8 @@ fun buildContextForMusicQueue(
     buildList {
         add(
             DialogItem(
-                context.getString(R.string.play),
+                resources.getString(R.string.play),
                 Icons.Default.PlayArrow,
-                iconColor = Color.Green.copy(alpha = .8f),
                 dismissOnClick = true,
             ) {
                 actions.onClickPlay(index, item)
@@ -873,9 +929,8 @@ fun buildContextForMusicQueue(
         )
         add(
             DialogItem(
-                context.getString(R.string.play_next),
+                resources.getString(R.string.play_next),
                 Icons.Default.PlayArrow,
-                iconColor = Color.Green.copy(alpha = .8f),
                 dismissOnClick = true,
             ) {
                 actions.onClickPlayNext(index, item)
@@ -883,7 +938,7 @@ fun buildContextForMusicQueue(
         )
         add(
             DialogItem(
-                context.getString(R.string.remove_from_queue),
+                resources.getString(R.string.remove_from_queue),
                 Icons.Default.Delete,
                 dismissOnClick = true,
             ) {
@@ -893,7 +948,7 @@ fun buildContextForMusicQueue(
         if (item.albumId != null) {
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_album),
+                    resources.getString(R.string.go_to_album),
                     Icons.Default.ArrowForward,
                     dismissOnClick = true,
                 ) {
@@ -904,7 +959,7 @@ fun buildContextForMusicQueue(
         if (item.artistId != null) {
             add(
                 DialogItem(
-                    context.getString(R.string.go_to_artist),
+                    resources.getString(R.string.go_to_artist),
                     Icons.Default.ArrowForward,
                     dismissOnClick = true,
                 ) {

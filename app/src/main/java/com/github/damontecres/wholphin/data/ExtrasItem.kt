@@ -4,9 +4,16 @@ import androidx.annotation.PluralsRes
 import androidx.annotation.StringRes
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.model.BaseItem
+import com.github.damontecres.wholphin.ui.AspectRatio
+import com.github.damontecres.wholphin.ui.components.ViewOptions
 import com.github.damontecres.wholphin.ui.nav.Destination
+import com.github.damontecres.wholphin.ui.util.ResStringProvider
+import com.github.damontecres.wholphin.util.GetItemsRequestHandler
 import org.jellyfin.sdk.model.UUID
 import org.jellyfin.sdk.model.api.ExtraType
+import org.jellyfin.sdk.model.api.ItemSortBy
+import org.jellyfin.sdk.model.api.SortOrder
+import org.jellyfin.sdk.model.api.request.GetItemsRequest
 
 /**
  * Represents "extras" for media such as behind-the-scenes or deleted scenes
@@ -20,6 +27,7 @@ sealed interface ExtrasItem {
     val subtitle: String?
     val isPlayed: Boolean
     val playedPercentage: Double
+    val aspectRatio: Float?
 
     /**
      * Represents multiple extras of the same type
@@ -32,9 +40,26 @@ sealed interface ExtrasItem {
         override val title: String,
         override val subtitle: String,
         override val isPlayed: Boolean,
+        override val aspectRatio: Float?,
     ) : ExtrasItem {
         override val destination: Destination =
-            Destination.ItemGrid(null, type.stringRes, items.map { it.id })
+            Destination.ItemGrid(
+                title = ResStringProvider(type.stringRes),
+                request =
+                    GetItemsRequest(
+                        ids = items.map { it.id },
+                        sortBy = listOf(ItemSortBy.SORT_NAME),
+                        sortOrder = listOf(SortOrder.ASCENDING),
+                    ),
+                requestHandler = GetItemsRequestHandler,
+                initialPosition = 0,
+                viewOptions =
+                    ViewOptions(
+                        columns = 3,
+                        spacing = 24,
+                        aspectRatio = AspectRatio.WIDE,
+                    ),
+            )
 
         override val playedPercentage
             get() = -1.0
@@ -59,6 +84,8 @@ sealed interface ExtrasItem {
             get() = item.played
         override val playedPercentage
             get() = item.data.userData?.playedPercentage ?: 0.0
+        override val aspectRatio: Float?
+            get() = item.aspectRatio
     }
 }
 
@@ -69,18 +96,18 @@ sealed interface ExtrasItem {
 val ExtraType.stringRes: Int
     get() =
         when (this) {
-            ExtraType.UNKNOWN -> R.string.other_extras
-            ExtraType.CLIP -> R.string.clips
-            ExtraType.TRAILER -> R.string.trailers
-            ExtraType.BEHIND_THE_SCENES -> R.string.behind_the_scenes
-            ExtraType.DELETED_SCENE -> R.string.deleted_scenes
-            ExtraType.INTERVIEW -> R.string.interviews
-            ExtraType.SCENE -> R.string.scenes
-            ExtraType.SAMPLE -> R.string.samples
-            ExtraType.THEME_SONG -> R.string.theme_songs
-            ExtraType.THEME_VIDEO -> R.string.theme_videos
-            ExtraType.FEATURETTE -> R.string.featurettes
-            ExtraType.SHORT -> R.string.shorts
+            ExtraType.UNKNOWN -> R.string.other_extras_title
+            ExtraType.CLIP -> R.string.clips_title
+            ExtraType.TRAILER -> R.string.trailers_title
+            ExtraType.BEHIND_THE_SCENES -> R.string.behind_the_scenes_title
+            ExtraType.DELETED_SCENE -> R.string.deleted_scenes_title
+            ExtraType.INTERVIEW -> R.string.interviews_title
+            ExtraType.SCENE -> R.string.scenes_title
+            ExtraType.SAMPLE -> R.string.samples_title
+            ExtraType.THEME_SONG -> R.string.theme_songs_title
+            ExtraType.THEME_VIDEO -> R.string.theme_videos_title
+            ExtraType.FEATURETTE -> R.string.featurettes_title
+            ExtraType.SHORT -> R.string.shorts_title
         }
 
 /**
